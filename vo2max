@@ -30,14 +30,116 @@ VT1 = intensity[inflexionIndex] * 0.5;
 VT2 = intensity[inflexionIndex] * 0.7;
 }
 
-// Beaver Method - Non-linear regression model for VO2 vs Intensity curve
-void calculateVO2Beaver(float intensity[], float VO2[], int length, float& VT1, float& VT2) {
-// Realizar ajuste de regresión no lineal para modelar la curva VO2 vs Intensity
-// Aquí deberías implementar tu propio algoritmo de ajuste de regresión no lineal según el modelo de Beaver
+#include <Eigen/Dense>
 
-// Una vez que hayas realizado el ajuste, obtén los valores de VT1 y VT2 estimados del modelo
-VT1 = /* Obtener el valor estimado de VT1 desde el modelo de regresión */;
-VT2 = /* Obtener el valor estimado de VT2 desde el modelo de regresión */;
+// Función objetivo para el ajuste de regresión no lineal
+Eigen::VectorXd objectiveFunction(const Eigen::VectorXd& x, const Eigen::VectorXd& intensity) {
+    // Modelo de regresión no lineal según el modelo de Beaver
+    Eigen::VectorXd y(x.size());
+    for (int i = 0; i < x.size(); i++) {
+        // Ajusta aquí la ecuación del modelo de Beaver
+        y(i) =/* Ajusta la ecuación del modelo de Beaver */;
+    }
+    return y;
+}
+
+void calculateVO2Beaver(float intensity[], float VO2[], int length, float& VT1, float& VT2) {
+    // Crear matrices y vectores utilizando la biblioteca Eigen
+    Eigen::VectorXd x(length);
+    Eigen::VectorXd y(length);
+    for (int i = 0; i < length; i++) {
+        x(i) = intensity[i];
+        y(i) = VO2[i];
+    }
+
+    // Definir el tamaño del vector de parámetros y la función objetivo
+    int numParams = /* Ajusta el número de parámetros del modelo */;
+    Eigen::VectorXd params(numParams);
+
+    // Realizar el ajuste de regresión no lineal utilizando mínimos cuadrados no lineales
+    // Aquí deberías utilizar un método de ajuste adecuado de la biblioteca Eigen, como Levenberg-Marquardt
+    // Consulta la documentación de Eigen para obtener más información sobre los métodos de ajuste disponibles
+
+    // Obtener los valores estimados de VT1 y VT2 a partir de los parámetros ajustados
+    VT1 = /* Obtener el valor estimado de VT1 desde los parámetros ajustados */;
+    VT2 = /* Obtener el valor estimado de VT2 desde los parámetros ajustados */;
+}
+
+float calculateSlope(float x[], float y[], int start, int end) {
+    // Calculation of slope using least squares
+    float sumXY = 0;
+    float sumX = 0;
+    float sumY = 0;
+    float sumX2 = 0;
+
+    for (int i = start; i < end; i++) {
+        sumXY += x[i] * y[i];
+        sumX += x[i];
+        sumY += y[i];
+        sumX2 += x[i] * x[i];
+    }
+
+    float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+    return slope;
+}
+
+void calculateVT1VT2Dickhuth(float VO2[], float VCO2[], int length, float& VT1, float& VT2) {
+    // Calculate the slope of VO2 and VCO2
+    float slopeVO2 = calculateSlope(VO2, VO2, 0, length);
+    float slopeVCO2 = calculateSlope(VCO2, VCO2, 0, length);
+
+    // Find the point of maximum acceleration
+    float maxAcceleration = 0;
+    int maxAccelerationIndex = 0;
+    for (int i = 1; i < length - 1; i++) {
+        float acceleration = (VO2[i + 1] - VO2[i - 1]) / 2 + (VCO2[i + 1] - VCO2[i - 1]) / 2;
+        if (acceleration > maxAcceleration) {
+            maxAcceleration = acceleration;
+            maxAccelerationIndex = i;
+        }
+    }
+
+    // Calculate VT1 and VT2
+    VT1 = VO2[maxAccelerationIndex];
+    VT2 = VO2[length - 1];
+}
+
+void setup() {
+    // Aquí puedes inicializar y configurar tu dispositivo si es necesario
+}
+
+void loop() {
+    // Datos de prueba
+    float intensity[] = {1.0, 2.0, 3.0, 4.0, 5.0};
+    float VO2[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+    float VCO2[] = {5.0, 10.0, 15.0, 20.0, 25.0};
+    int length = sizeof(intensity)/ sizeof(intensity[0]);
+
+    // Variables para almacenar los valores estimados de VT1 y VT2
+    float VT1, VT2;
+
+    // Realizar el cálculo de VO2 utilizando el método de Beaver
+    calculateVO2Beaver(intensity, VO2, length, VT1, VT2);
+
+    // Imprimir los resultados
+    Serial.begin(9600);
+    Serial.print("VT1: ");
+    Serial.println(VT1);
+    Serial.print("VT2: ");
+    Serial.println(VT2);
+
+    // Realizar el cálculo de VT1 y VT2 utilizando el método de Dickhuth
+    calculateVT1VT2Dickhuth(VO2, VCO2, length, VT1, VT2);
+
+    // Imprimir los resultados
+    Serial.print("VT1: ");
+    Serial.println(VT1);
+    Serial.print("VT2: ");
+    Serial.println(VT2);
+
+    // Esperar un tiempo antes de repetir el cálculo
+    delay(1000);
 }
 
 // Dickhuth Method - Maximum acceleration between VO2 and VCO2 measured in 5-second intervals
@@ -60,7 +162,7 @@ VT1 = VO2[maxAccelerationIndex] * 0.5;
 VT2 = VO2[maxAccelerationIndex] * 0.7;
 }
 
-// Función para calcular pendiente
+// Method Función para calcular pendiente
 float calculateSlope(float x[], float y[], int start, int end) {
   // Cálculo de pendiente usando mínimos cuadrados
   float sumXY = 0;
@@ -165,7 +267,591 @@ void loop() {
   
 }
 
-// Función para calcular pendiente entre 2 puntos
+// Method Función para calcular pendiente entre 2 puntos
 //En la función calcularUmbrales(), se inicializan las variables necesarias, como slope1, slope2, VT1, VT1_index, y length. Luego, se realiza un bucle para calcular la pendiente entre los datos de VO2 y VCO2 utilizando la función calculateSlope(). Si hay un cambio de pendiente, se asigna el valor correspondiente a VT1 y se actualiza el índice de VT1 (VT1_index). El bucle se detiene una vez que se encuentra el cambio de pendiente utilizando la declaración break.
 
 //Después, se realiza otro bucle a partir del índice de VT1 hasta el final de los datos para calcular la pendiente utilizando la función calculateSlope(). Si hay un cambio de pendiente, se asigna el valor correspondiente a VT2. El bucle se detiene una vez que se encuentra el cambio de pendiente utilizando la declaración break.
+
+// Beaver Method - Non-linear regression model for VO2 vs Intensity curve
+#include <Eigen/Dense>
+
+// Función objetivo para el ajuste de regresión no lineal
+Eigen::VectorXd objectiveFunction(const Eigen::VectorXd& x, const Eigen::VectorXd& intensity) {
+    // Modelo de regresión no lineal según el modelo de Beaver
+    Eigen::VectorXd y(x.size());
+    for (int i = 0; i < x.size(); i++) {
+        // Ajusta aquí la ecuación del modelo de Beaver
+        y(i) = /* Ajusta la ecuación del modelo de Beaver */;
+    }
+    return y;
+}
+
+void calculateVO2Beaver(float intensity[], float VO2[], int length, float& VT1, float& VT2) {
+    // Crear matrices y vectores utilizando la biblioteca Eigen
+    Eigen::VectorXd x(length);
+    Eigen::VectorXd y(length);
+    for (int i = 0; i < length; i++) {
+        x(i) = intensity[i];
+        y(i) = VO2[i];
+    }
+
+    // Definir el tamaño del vector de parámetros y la función objetivo
+    int numParams = /* Ajusta el número de parámetros del modelo */;
+    Eigen::VectorXd params(numParams);
+
+    // Realizar el ajuste de regresión no lineal utilizando mínimos cuadrados no lineales
+    // Aquí deberías utilizar un método de ajuste adecuado de la biblioteca Eigen, como Levenberg-Marquardt
+    // Consulta la documentación de Eigen para obtener más información sobre los métodos de ajuste disponibles
+
+    // Obtener los valores estimados de VT1 y VT2 a partir de los parámetros ajustados
+    VT1 = /* Obtener el valor estimado de VT1 desde los parámetros ajustados */;
+    VT2 = /* Obtener el valor estimado de VT2 desde los parámetros ajustados */;
+}
+
+void setup()
+{
+  Serial.begin(115200);
+}
+
+void loop()
+{
+  // Datos de prueba
+  float intensity[] = {1.0, 2.0, 3.0, 4.0, 5.0};
+  float VO2[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+  int length = sizeof(intensity) / sizeof(intensity[0]);
+
+  // Variables para almacenar los valores estimados de VT1 y VT2
+  float VT1, VT2;
+
+  // Realizar el cálculo de VO2 utilizando el método de Beaver
+  calculateVO2Beaver(intensity, VO2, length, VT1, VT2);
+
+  // Imprimir los resultados
+  Serial.print("VT1: ");
+  Serial.println(VT1);
+  Serial.print("VT2: ");
+  Serial.println(VT2);
+
+  // Esperar un tiempo antes de repetir el cálculo
+  delay(1000);
+}// Beaver Method - Non-linear regression model for VO2 vs Intensity curve
+#include <Eigen/Dense>
+
+// Función objetivo para el ajuste de regresión no lineal
+Eigen::VectorXd objectiveFunction(const Eigen::VectorXd& x, const Eigen::VectorXd& intensity) {
+    // Modelo de regresión no lineal según el modelo de Beaver
+    Eigen::VectorXd y(x.size());
+    for (int i = 0; i < x.size(); i++) {
+        // Ajusta aquí la ecuación del modelo de Beaver
+        y(i) = /* Ajusta la ecuación del modelo de Beaver */;
+    }
+    return y;
+}
+
+void calculateVO2Beaver(float intensity[], float VO2[], int length, float& VT1, float& VT2) {
+    // Crear matrices y vectores utilizando la biblioteca Eigen
+    Eigen::VectorXd x(length);
+    Eigen::VectorXd y(length);
+    for (int i = 0; i < length; i++) {
+        x(i) = intensity[i];
+        y(i) = VO2[i];
+    }
+
+    // Definir el tamaño del vector de parámetros y la función objetivo
+    int numParams = /* Ajusta el número de parámetros del modelo */;
+    Eigen::VectorXd params(numParams);
+
+    // Realizar el ajuste de regresión no lineal utilizando mínimos cuadrados no lineales
+    // Aquí deberías utilizar un método de ajuste adecuado de la biblioteca Eigen, como Levenberg-Marquardt
+    // Consulta la documentación de Eigen para obtener más información sobre los métodos de ajuste disponibles
+
+    // Obtener los valores estimados de VT1 y VT2 a partir de los parámetros ajustados
+    VT1 = /* Obtener el valor estimado de VT1 desde los parámetros ajustados */;
+    VT2 = /* Obtener el valor estimado de VT2 desde los parámetros ajustados */;
+}
+
+void setup()
+{
+  Serial.begin(115200);
+}
+
+void loop()
+{
+  // Datos de prueba
+  float intensity[] = {1.0, 2.0, 3.0, 4.0, 5.0};
+  float VO2[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+  int length = sizeof(intensity) / sizeof(intensity[0]);
+
+  // Variables para almacenar los valores estimados de VT1 y VT2
+  float VT1, VT2;
+
+  // Realizar el cálculo de VO2 utilizando el método de Beaver
+  calculateVO2Beaver(intensity, VO2, length, VT1, VT2);
+
+  // Imprimir los resultados
+  Serial.print("VT1: ");
+  Serial.println(VT1);
+  Serial.print("VT2: ");
+  Serial.println(VT2);
+
+  // Esperar un tiempo antes de repetir el cálculo
+  delay(1000);
+} // Calculates the slope of a given array
+float calculateSlope(float x[], float y[], int start,int end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i];
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXYint end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i]; - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope1 = 0.0;
+  float slope2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (s slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float slope1 = int end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i];
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float slope1 = 0.0;
+  float slope0.0;
+  float slope2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (slope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = ilope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = i; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, j);
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+}
+```; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, j2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (slope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = i; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope();
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+}
+```VO2_data, VCO2_data, VT1_index, j);
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+}
+```int end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i];
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float slope1 = 0.0;
+  float slope2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (slope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = i; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, j);
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+}// Calculates the slope of a given array
+float calculateSlope(float x[], float y[], int start,int end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i];
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXYint end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i]; - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope1 = 0.0;
+  float slope2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (s slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float slope1 = int end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i];
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float slope1 = 0.0;
+  float slope0.0;
+  float slope2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (slope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = ilope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = i; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, j);
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+}
+```; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, j2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (slope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = i; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope();
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+}
+```VO2_data, VCO2_data, VT1_index, j);
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+}
+```int end)
+{
+  // Calculation of slope using least squares
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++)
+  {
+    sumXY += x[i] * y[i];
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope;
+}
+
+// Calculates VT1 and VT2 using the Dickhuth method
+void calcularUmbrales()
+{
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float slope1 = 0.0;
+  float slope2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++)
+  {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (slope1 != slope2)
+    {
+      VT1 = VO2_data[i];
+      VT1_index = i; // Update the VT1 index
+      break; // End the loop once the slope change is found
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++)
+  {
+    slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, j);
+
+    if (slope1 != slope2)
+    {
+      VT2 = VO2_data[j];
+      break; // End the loop once the slope change is found
+    }
+  }
+} // Dickhuth Method - Maximum acceleration between VO2 and VCO2 measured in 5-second intervals
+void calculateVO2Dickhuth(float VO2[], float VCO2[], int length, float& VT1, float& VT2)
+{
+  float maxAcceleration = 0.0;
+  int maxAccelerationIndex = 0;
+
+  // Calculate the maximum acceleration between VO2 and VCO2 in 5-second intervals
+  for (int i = 2; i < length - 2; i++)
+  {
+    float acceleration = (VO2[i + 2] + VCO2[i + 2] - 2 * VO2[i] - 2 * VCO2[i] + VO2[i - 2] + VCO2[i - 2]) / 5.0;
+
+    if (acceleration > maxAcceleration)
+    {
+      maxAcceleration = acceleration;
+      maxAccelerationIndex = i;
+    }
+  }
+
+  // Obtain the values of VT1 and VT2 corresponding to the maximum acceleration
+  VT1 = VO2[maxAccelerationIndex] * 0.5;
+  VT2 = VO2[maxAccelerationIndex] * 0.7;
+}// Dickhuth Method - Maximum acceleration between VO2 and VCO2 measured in 5-second intervals
+void calculateVO2Dickhuth(float VO2[], float VCO2[], int length, float& VT1, float& VT2)
+{
+  float maxAcceleration = 0.0;
+  int maxAccelerationIndex = 0;
+
+  // Calculate the maximum acceleration between VO2 and VCO2 in 5-second intervals
+  for (int i = 2; i < length - 2; i++)
+  {
+    float acceleration = (VO2[i + 2] + VCO2[i + 2] - 2 * VO2[i] - 2 * VCO2[i] + VO2[i - 2] + VCO2[i - 2]) / 5.0;
+
+    if (acceleration > maxAcceleration)
+    {
+      maxAcceleration = acceleration;
+      maxAccelerationIndex = i;
+    }
+  }
+
+  // Obtain the values of VT1 and VT2 corresponding to the maximum acceleration
+  VT1 = VO2[maxAccelerationIndex] * 0.5;
+  VT2 = VO2[maxAccelerationIndex] * 0.7;
+}

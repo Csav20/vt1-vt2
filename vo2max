@@ -1,0 +1,171 @@
+
+// Arreglos de datos
+float vo2_data[100];
+float ve_data[100];
+float vco2_data[100];
+float time_data[100];
+
+//Wasserman Method - VO2 vs Intensity Inflexion Point
+void calculateVO2Wasserman(float intensity[], float VO2[], int length, float& VT1, float& VT2) {
+float maxVO2 = 0.0;
+int inflexionIndex = 0;
+
+// Encontrar el índice de inflexión de la curva VO2 vs Intensity
+for (int i = 1; i < length - 1; i++) {
+if (VO2[i] > VO2[i - 1] && VO2[i] > VO2[i + 1]) {
+inflexionIndex = i;
+break;
+}
+}
+
+// Calcular el VO2 máximo como el valor más alto antes del punto de inflexión
+for (int i = 0; i < inflexionIndex; i++) {
+if (VO2[i] > maxVO2) {
+maxVO2 = VO2[i];
+}
+}
+
+// Calcular VT1 y VT2 basados en el punto de inflexión
+VT1 = intensity[inflexionIndex] * 0.5;
+VT2 = intensity[inflexionIndex] * 0.7;
+}
+
+// Beaver Method - Non-linear regression model for VO2 vs Intensity curve
+void calculateVO2Beaver(float intensity[], float VO2[], int length, float& VT1, float& VT2) {
+// Realizar ajuste de regresión no lineal para modelar la curva VO2 vs Intensity
+// Aquí deberías implementar tu propio algoritmo de ajuste de regresión no lineal según el modelo de Beaver
+
+// Una vez que hayas realizado el ajuste, obtén los valores de VT1 y VT2 estimados del modelo
+VT1 = /* Obtener el valor estimado de VT1 desde el modelo de regresión */;
+VT2 = /* Obtener el valor estimado de VT2 desde el modelo de regresión */;
+}
+
+// Dickhuth Method - Maximum acceleration between VO2 and VCO2 measured in 5-second intervals
+void calculateVO2Dickhuth(float VO2[], float VCO2[], int length, float& VT1, float& VT2) {
+float maxAcceleration = 0.0;
+int maxAccelerationIndex = 0;
+
+// Calcular la aceleración máxima entre VO2 y VCO2 en intervalos de 5 segundos
+for (int i = 2; i < length - 2; i++) {
+float acceleration = (VO2[i + 2] + VCO2[i + 2] - 2 * VO2[i] - 2 * VCO2[i] + VO2[i - 2] + VCO2[i - 2]) / 5.0;
+
+if (acceleration > maxAcceleration) {
+maxAcceleration = acceleration;
+maxAccelerationIndex = i;
+}
+}
+
+// Obtener los valores de VT1 y VT2 correspondientes a la máxima aceleración
+VT1 = VO2[maxAccelerationIndex] * 0.5;
+VT2 = VO2[maxAccelerationIndex] * 0.7;
+}
+
+// Función para calcular pendiente
+float calculateSlope(float x[], float y[], int start, int end) {
+  // Cálculo de pendiente usando mínimos cuadrados
+  float sumXY = 0;
+  float sumX = 0;
+  float sumY = 0;
+  float sumX2 = 0;
+
+  for (int i = start; i < end; i++) {
+    sumXY += x[i] * y[i];
+    sumX += x[i];
+    sumY += y[i];
+    sumX2 += x[i] * x[i];
+  }
+
+  float slope = (end - start) * (sumXY - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
+
+  return slope;
+}
+
+void calcularUmbrales() {
+  int length = sizeof(VO2_data) / sizeof(VO2_data[0]);
+  float slope1 = 0.0;
+  float slope2 = 0.0;
+  int VT1_index = 0;
+
+  for (int i = 0; i < length; i++) {
+    slope1 = calculateSlope(VO2_data, VCO2_data, 0, i);
+
+    if (slope1 != slope2) {
+      VT1 = VO2_data[i];
+      VT1_index = i;  // Actualizar el índice de VT1
+      break; // Terminar el bucle una vez que se encuentra el cambio de pendiente
+    }
+  }
+
+  for (int j = VT1_index; j < length; j++) {
+    slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, j);
+
+    if (slope1 != slope2) {
+      VT2 = VO2_data[j];
+      break; // Terminar el bucle una vez que se encuentra el cambio de pendiente
+    }
+  }
+}
+//En la función calculateSlope(), se realiza el cálculo de la pendiente utilizando el método de mínimos cuadrados. Se suman los productos x[i] * y[i], los valores de x[i], y[i], y x[i] * x[i] dentro del rango especificado (start y end). Luego, se utiliza la fórmula de la pendiente para calcular el valor y se retorna.
+// Nuevas variables
+float VT1, VT1_time;
+float VT2, VT2_time; 
+
+void calcularVT(){
+
+  // Calcular VT1
+  float slope1 = calculateSlope(VE_data, VO2_data, 0, time1);
+
+  VT1 = VO2_data[time1];
+  VT1_time = time1;
+
+  // Calcular VT2
+  float slope2 = calculateSlope(VO2_data, CO2_data, VT1_time, time2);
+
+  VT2 = VO2_data[time2];
+  VT2_time = time2;
+
+}
+
+void showScreen(){
+
+  if(screenNr == 8){
+
+    // Mostrar VT1    
+    tft.drawString("VT1:", 0,0);
+    tft.drawString(VT1, 50,0);
+    tft.drawString(VT1_time, 100,0);
+
+    // Mostrar VT2
+    tft.drawString("VT2:", 0,20); 
+    tft.drawString(VT2, 50,20);
+    tft.drawString(VT2_time, 100,20);
+    
+    // Mostrar %VT1 y %VT2 respecto VO2max
+    tft.drawString("%VT1:", 0,40);
+    tft.drawString(calculatePercentage(VT1), 50,40);
+
+  }
+
+}
+void loop() {
+
+  // Llenar arrays con datos simulados de VO2 y VCO2
+  populateDataArrays();
+
+  // Calcular pendiente del aumento de VO2 vs VCO2 entre cada umbral
+  float slope1 = calculateSlope(VO2_data, VCO2_data, 0, VT1_index);
+  float slope2 = calculateSlope(VO2_data, VCO2_data, VT1_index, VT2_index);
+
+  // Mostrar resultados por monitor serial
+  Serial.println("Umbrales ventilatorios:");
+  Serial.print("VT1: "); 
+  Serial.println(VT1);
+  Serial.print("VT2: ");
+  Serial.println(VT2);
+  
+}
+
+// Función para calcular pendiente entre 2 puntos
+//En la función calcularUmbrales(), se inicializan las variables necesarias, como slope1, slope2, VT1, VT1_index, y length. Luego, se realiza un bucle para calcular la pendiente entre los datos de VO2 y VCO2 utilizando la función calculateSlope(). Si hay un cambio de pendiente, se asigna el valor correspondiente a VT1 y se actualiza el índice de VT1 (VT1_index). El bucle se detiene una vez que se encuentra el cambio de pendiente utilizando la declaración break.
+
+//Después, se realiza otro bucle a partir del índice de VT1 hasta el final de los datos para calcular la pendiente utilizando la función calculateSlope(). Si hay un cambio de pendiente, se asigna el valor correspondiente a VT2. El bucle se detiene una vez que se encuentra el cambio de pendiente utilizando la declaración break.

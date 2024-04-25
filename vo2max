@@ -308,13 +308,7 @@ void calculateVO2Beaver(float intensity[], float VO2[], int length, float& VT1, 
     VT2 = /* Obtener el valor estimado de VT2 desde los parámetros ajustados */;
 }
 
-void setup()
-{
-  Serial.begin(115200);
-}
 
-void loop()
-{
   // Datos de prueba
   float intensity[] = {1.0, 2.0, 3.0, 4.0, 5.0};
   float VO2[] = {10.0, 20.0, 30.0, 40.0, 50.0};
@@ -370,63 +364,6 @@ void calculateVO2Beaver(float intensity[], float VO2[], int length, float& VT1, 
     VT2 = /* Obtener el valor estimado de VT2 desde los parámetros ajustados */;
 }
 
-void setup()
-{
-  Serial.begin(115200);
-}
-
-void loop()
-{
-  // Datos de prueba
-  float intensity[] = {1.0, 2.0, 3.0, 4.0, 5.0};
-  float VO2[] = {10.0, 20.0, 30.0, 40.0, 50.0};
-  int length = sizeof(intensity) / sizeof(intensity[0]);
-
-  // Variables para almacenar los valores estimados de VT1 y VT2
-  float VT1, VT2;
-
-  // Realizar el cálculo de VO2 utilizando el método de Beaver
-  calculateVO2Beaver(intensity, VO2, length, VT1, VT2);
-
-  // Imprimir los resultados
-  Serial.print("VT1: ");
-  Serial.println(VT1);
-  Serial.print("VT2: ");
-  Serial.println(VT2);
-
-  // Esperar un tiempo antes de repetir el cálculo
-  delay(1000);
-} // Calculates the slope of a given array
-float calculateSlope(float x[], float y[], int start,int end)
-{
-  // Calculation of slope using least squares
-  float sumXY = 0;
-  float sumX = 0;
-  float sumY = 0;
-  float sumX2 = 0;
-
-  for (int i = start; i < end; i++)
-  {
-    sumXY += x[i] * y[i];
-    sumX += x[i];
-    sumY += y[i];
-    sumX2 += x[i] * x[i];
-  }
-
-  float slope = (end - start) * (sumXYint end)
-{
-  // Calculation of slope using least squares
-  float sumXY = 0;
-  float sumX = 0;
-  float sumY = 0;
-  float sumX2 = 0;
-
-  for (int i = start; i < end; i++)
-  {
-    sumXY += x[i] * y[i]; - (sumX * sumY) / (end - start)) / (sumX2 - (sumX * sumX) / (end - start));
-
-  return slope;
-}
 
 // Calculates VT1 and VT2 using the Dickhuth method
 void calcularUmbrales()
@@ -812,28 +749,8 @@ void calcularUmbrales()
       break; // End the loop once the slope change is found
     }
   }
-} // Dickhuth Method - Maximum acceleration between VO2 and VCO2 measured in 5-second intervals
-void calculateVO2Dickhuth(float VO2[], float VCO2[], int length, float& VT1, float& VT2)
-{
-  float maxAcceleration = 0.0;
-  int maxAccelerationIndex = 0;
-
-  // Calculate the maximum acceleration between VO2 and VCO2 in 5-second intervals
-  for (int i = 2; i < length - 2; i++)
-  {
-    float acceleration = (VO2[i + 2] + VCO2[i + 2] - 2 * VO2[i] - 2 * VCO2[i] + VO2[i - 2] + VCO2[i - 2]) / 5.0;
-
-    if (acceleration > maxAcceleration)
-    {
-      maxAcceleration = acceleration;
-      maxAccelerationIndex = i;
-    }
-  }
-
-  // Obtain the values of VT1 and VT2 corresponding to the maximum acceleration
-  VT1 = VO2[maxAccelerationIndex] * 0.5;
-  VT2 = VO2[maxAccelerationIndex] * 0.7;
-}// Dickhuth Method - Maximum acceleration between VO2 and VCO2 measured in 5-second intervals
+} 
+// Dickhuth Method - Maximum acceleration between VO2 and VCO2 measured in 5-second intervals
 void calculateVO2Dickhuth(float VO2[], float VCO2[], int length, float& VT1, float& VT2)
 {
   float maxAcceleration = 0.0;

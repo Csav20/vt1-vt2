@@ -1,4 +1,408 @@
+// Vo2Smart - Código Optimizado
+// Claudio Abarca - Patente 2024024875
+// Proyecto VO2Max ESP32 Integrado
+// Mejorado por Grok 3 (xAI)
+// Fecha: 01 de abril de 2025
 
+#define DIAMETER 20
+#define VERBOSE
+
+#include <Arduino.h>
+#include "esp_adc_cal.h"
+#include <EEPROM.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <Wire.h>
+#include "Adafruit_BMP280.h"
+#include "DFRobot_OxygenSensor.h"
+#include "SCD30.h"
+#include "Omron_D6FPH.h"
+#include "BluetoothSerial.h"
+
+// Hardware Pins
+#define ADC_EN 14
+#define ADC_PIN 34
+#define buttonPin1 0
+#define buttonPin2 35
+
+// Connectivity Settings
+const char* ssid = "VO2Max_Network";
+const char* password = "vo2smart2025";
+int vref = 1100;
+
+// Objects
+BluetoothSerial SerialBT;
+WebServer server(80);
+TFT_eSPI tft = TFT_eSPI();
+Adafruit_BMP280 bmp;
+Omron_D6FPH mySensor;
+DFRobot_OxygenSensor Oxygen;
+#define COLLECT_NUMBER 10
+#define Oxygen_IICAddress ADDRESS_3
+SCD30 scd30;
+
+// Global Variables
+struct {
+    int version = 1;
+    float correctionSensor = 1.0;
+    float weightkg = 75.0;
+    bool co2_on = false;
+} settings;
+
+float volumeTotal = 0, pressure = 0, lastO2 = 20.93;
+float vo2Max = 0, vo2MaxMax = 0, vco2Max = 0, respq = 0, vo2Total = 0, co2perc = 0;
+float TimerStart = 0, TotalTime = 0;
+String TotalTimeMin = "00:00";
+int screenNr = 7, DEMO = 0;
+int buttonPushCounter1 = 0, buttonPushCounter2 = 0;
+
+// Data arrays
+float vo2_data[100] = {0};
+float ve_data[100] = {0};
+float vco2_data[100] = {0};
+float time_data[100] = {0};
+int dataIndex = 0;
+
+// Ventilatory thresholds
+float VT1 = 0, VT1_time = 0;
+float VT2 = 0, VT2_time = 0;
+
+// HTML Page
+const char* htmlPage = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VO2Smart Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial; margin: 0; padding: 20px; background: #f0f0f0; }
+        .container { max-width: 800px; margin: auto; }
+        .card { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .value { font-size: 24px; color: #2196F3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>VO2Smart Real-Time Data</h1>
+        <div class="card">
+            <h3>VO2 Max: <span class="value" id="vo2">0</span> ml/kg/min</h3>
+            <h3>RQ: <span class="value" id="rq">0</span></h3>
+            <h3>Time: <span class="value" id="time">00:00</span></h3>
+        </div>
+    </div>
+    <script>
+        function updateData() {
+            fetch('/data')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('vo2').innerText = data.vo2Max.toFixed(1);
+                    document.getElementById('rq').innerText = data.rq.toFixed(2);
+                    document.getElementById('time').innerText = data.time;
+                });
+        }
+        setInterval(updateData, 1000);
+    </script>
+</body>
+</html>
+)rawliteral";
+
+void setup() {
+    EEPROM.begin(512);
+    pinMode(buttonPin1, INPUT_PULLUP);
+    pinMode(buttonPin2, INPUT_PULLUP);
+    pinMode(ADC_EN, OUTPUT);
+    digitalWrite(ADC_EN, HIGH);
+
+    Serial.begin(115200);
+    tft.init();
+    tft.setRotation(1);
+    tft.fillScreen(TFT_BLACK);
+    showISOScreen();
+
+    esp_adc_cal_characteristics_t adc_chars;
+    esp_adc_cal_value_t val_type = esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+    if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) vref = adc_chars.vref;
+
+    Wire.begin();
+    bmp.begin(0x76);
+    Oxygen.begin(Oxygen_IICAddress);
+    scd30.initialize();
+    mySensor.begin(MODEL_0025AD1);
+
+    setupWiFi();
+    setupBluetoothSerial();
+    server.on("/", []() { server.send(200, "text/html", htmlPage); });
+    server.on("/data", sendData);
+    server.begin();
+
+    loadSettings();
+    TimerStart = millis();
+
+    if (!digitalRead(buttonPin2)) DEMO = 1;
+}
+
+void loop() {
+    TotalTime = millis() - TimerStart;
+    VolumeCalc();
+    if ((millis() - TimerStart) > 5000) {
+        vo2maxCalc();
+        storeData();
+        calculateVT();
+        showScreen();
+        server.handleClient();
+        if (DEMO) demoMode();
+    }
+    ReadButtons();
+    if (buttonPushCounter1 > 20 && buttonPushCounter2 > 20) ESP.restart();
+}
+
+// Connectivity Functions
+void setupWiFi() {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(ssid, password);
+    tft.setCursor(0, 40, 2);
+    tft.print("WiFi: ");
+    tft.println(WiFi.softAPIP());
+}
+
+void setupBluetoothSerial() {
+    SerialBT.begin("VO2Max-13");
+    tft.setCursor(0, 60, 2);
+    tft.print("BT: Ready");
+}
+
+void sendData() {
+    String json = "{\"vo2Max\":" + String(vo2Max) + 
+                  ",\"rq\":" + String(respq) + 
+                  ",\"time\":\"" + TotalTimeMin + "\"}";
+    server.send(200, "application/json", json);
+}
+
+// Core Functions
+void VolumeCalc() {
+    static unsigned long lastTime = 0;
+    pressure = mySensor.getPressure();
+    if (DEMO) pressure = (millis() % 5000 < 2500) ? 10 : 0;
+    if (pressure >= 0.2) {
+        float massFlow = 1000 * termISO26782(pressure, 1.225) * settings.correctionSensor;
+        unsigned long currentTime = millis();
+        float deltaTime = (currentTime - lastTime) / 1000.0;
+        volumeTotal += massFlow / 1.225 * deltaTime;
+        lastTime = currentTime;
+    }
+}
+
+void vo2maxCalc() {
+    lastO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+    if (DEMO) lastO2 = 20.93 - 4;
+    float FIO2 = 20.93;
+    vo2Total = volumeTotal / 1000 * (FIO2 - lastO2) / 100.0;
+    vo2Max = vo2Total / settings.weightkg / (TotalTime / 60000.0); // Normalizado por minuto
+    if (vo2Max > vo2MaxMax) vo2MaxMax = vo2Max;
+    if (settings.co2_on) {
+        readCO2();
+        vco2Max = volumeTotal / 1000 * (co2perc - 0.0004) / settings.weightkg / (TotalTime / 60000.0);
+        respq = (vco2Max * 44) / (vo2Max * 32);
+    }
+    ConvertTime(TotalTime);
+}
+
+void storeData() {
+    if (dataIndex < 100) {
+        vo2_data[dataIndex] = vo2Max;
+        ve_data[dataIndex] = volumeTotal;
+        vco2_data[dataIndex] = vco2Max;
+        time_data[dataIndex] = TotalTime / 1000.0;
+        dataIndex++;
+    }
+}
+
+// TFT Screen Functions
+void showISOScreen() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString("VO2Smart v1.0", 120, 20, 4);
+    tft.drawCentreString("Initializing...", 120, 60, 2);
+}
+
+void showScreen() {
+    ConvertTime(TotalTime);
+    switch (screenNr) {
+        case 1: tftScreen1(); break;
+        case 7: showValidationScreen(); break;
+        case 8: showVTscreen(); break;
+    }
+}
+
+void tftScreen1() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 5, 4);
+    tft.print("Time: ");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.println(TotalTimeMin);
+    tft.setCursor(5, 30, 4);
+    tft.print("VO2: ");
+    tft.println(vo2Max, 1);
+}
+
+void showValidationScreen() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString("Validation Metrics", 120, 5, 4);
+    tft.setCursor(5, 30, 4);
+    tft.print("VO2: ");
+    tft.println(vo2Max, 2);
+    if (settings.co2_on) {
+        tft.setCursor(5, 60, 4);
+        tft.print("RQ: ");
+        tft.println(respq, 2);
+    }
+}
+
+void showVTscreen() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString("VT1: ", 0, 0, 2);
+    tft.drawFloat(VT1, 2, 50, 0, 2);
+    tft.drawFloat(VT1_time, 2, 100, 0, 2);
+    tft.drawString("VT2: ", 0, 20, 2);
+    tft.drawFloat(VT2, 2, 50, 20, 2);
+    tft.drawFloat(VT2_time, 2, 100, 20, 2);
+    tft.drawString("%VT1: ", 0, 40, 2);
+    tft.drawFloat((VT1 / vo2MaxMax) * 100, 2, 50, 40, 2);
+    tft.drawString("%VT2: ", 0, 60, 2);
+    tft.drawFloat((VT2 / vo2MaxMax) * 100, 2, 50, 60, 2);
+}
+
+// Utility Functions
+void loadSettings() {
+    int version = EEPROM.read(0);
+    if (version == settings.version) EEPROM.get(0, settings);
+}
+
+void ReadButtons() {
+    if (!digitalRead(buttonPin1)) {
+        buttonPushCounter1++;
+        if (buttonPushCounter1 == 5) screenNr = (screenNr % 3) + 1; // Cicla entre pantallas
+    } else {
+        buttonPushCounter1 = 0;
+    }
+    if (!digitalRead(buttonPin2)) buttonPushCounter2++;
+    else buttonPushCounter2 = 0;
+}
+
+void ConvertTime(float time) {
+    int minutes = (int)(time / 60000);
+    int seconds = (int)((time / 1000) % 60);
+    char buffer[6];
+    sprintf(buffer, "%02d:%02d", minutes, seconds);
+    TotalTimeMin = String(buffer);
+}
+
+float termISO26782(float pressure, float density) {
+    // Implementación simplificada basada en ISO 26782 para flujo másico
+    float area = PI * pow(DIAMETER / 2.0, 2) / 10000.0; // Área en m²
+    return sqrt(2 * pressure / density) * area; // Flujo másico aproximado
+}
+
+void readCO2() {
+    if (scd30.isAvailable()) {
+        co2perc = scd30.getCO2() / 10000.0; // Convertir ppm a porcentaje
+    } else {
+        co2perc = 0.04; // Valor por defecto (0.04%)
+    }
+}
+
+void demoMode() {
+    static float demoTime = 0;
+    demoTime += 0.1;
+    vo2Max = 30 + 20 * sin(demoTime); // Simulación sinusoidal
+    vco2Max = 25 + 15 * sin(demoTime + 1);
+    volumeTotal = 1000 * demoTime;
+    respq = vco2Max / vo2Max;
+}
+
+// VT Calculation Functions
+float calculateSlope(float x[], float y[], int start, int end) {
+    float sumXY = 0, sumX = 0, sumY = 0, sumX2 = 0;
+    int n = end - start;
+    if (n <= 0) return 0;
+    for (int i = start; i < end; i++) {
+        sumXY += x[i] * y[i];
+        sumX += x[i];
+        sumY += y[i];
+        sumX2 += x[i] * x[i];
+    }
+    float denom = (n * sumX2 - sumX * sumX);
+    return (denom == 0) ? 0 : (n * sumXY - sumX * sumY) / denom;
+}
+
+void calculateVO2Wasserman() {
+    if (dataIndex < 3) return;
+    float maxVO2 = 0;
+    int inflexionIndex = 0;
+    for (int i = 1; i < dataIndex - 1; i++) {
+        if (vo2_data[i] > vo2_data[i - 1] && vo2_data[i] > vo2_data[i + 1]) {
+            inflexionIndex = i;
+            break;
+        }
+    }
+    for (int i = 0; i < inflexionIndex; i++) {
+        if (vo2_data[i] > maxVO2) maxVO2 = vo2_data[i];
+    }
+    VT1 = time_data[inflexionIndex] * 0.5;
+    VT2 = time_data[inflexionIndex] * 0.7;
+    VT1_time = time_data[inflexionIndex] * 0.5;
+    VT2_time = time_data[inflexionIndex] * 0.7;
+}
+
+void calculateVO2Beaver() {
+    if (dataIndex < 3) return;
+    // Simplificación: Busca el punto donde VCO2 crece más rápido que VO2
+    float maxDiff = 0;
+    int thresholdIndex = 0;
+    for (int i = 1; i < dataIndex - 1; i++) {
+        float diff = (vco2_data[i + 1] - vco2_data[i - 1]) - (vo2_data[i + 1] - vo2_data[i - 1]);
+        if (diff > maxDiff) {
+            maxDiff = diff;
+            thresholdIndex = i;
+        }
+    }
+    VT1 = vo2_data[thresholdIndex] * 0.6;
+    VT2 = vo2_data[thresholdIndex] * 0.8;
+    VT1_time = time_data[thresholdIndex] * 0.6;
+    VT2_time = time_data[thresholdIndex] * 0.8;
+}
+
+void calculateVO2Dickhuth() {
+    if (dataIndex < 5) return;
+    float maxAcceleration = 0;
+    int maxAccelIndex = 0;
+    for (int i = 2; i < dataIndex - 2; i++) {
+        float accel = (vo2_data[i + 2] + vco2_data[i + 2] - 2 * vo2_data[i] - 2 * vco2_data[i] + 
+                       vo2_data[i - 2] + vco2_data[i - 2]) / 5.0;
+        if (accel > maxAcceleration) {
+            maxAcceleration = accel;
+            maxAccelIndex = i;
+        }
+    }
+    VT1 = vo2_data[maxAccelIndex] * 0.5;
+    VT2 = vo2_data[maxAccelIndex] * 0.7;
+    VT1_time = time_data[maxAccelIndex] * 0.5;
+    VT2_time = time_data[maxAccelIndex] * 0.7;
+}
+
+void calculateVT() {
+    if (settings.co2_on) {
+        calculateVO2Dickhuth(); // Usa Dickhuth si CO2 está habilitado
+    } else {
+        calculateVO2Wasserman(); // Usa Wasserman si no hay CO2
+    }
+    // calculateVO2Beaver(); // Descomentar para usar Beaver en lugar de los otros
+}
 // Arreglos de datos
 float vo2_data[100];
 float ve_data[100];

@@ -25,7 +25,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
-#include <CircularBuffer.hpp>
+#include "CustomCircularBuffer.h"
 #include <limits>
 #include <ESPmDNS.h>
 #include "ble_html_server.h"
@@ -1004,6 +1004,37 @@ BLECharacteristic* pDataCharacteristic;
 OperationMode currentMode = MODE_VO2;
 bool modeSelected = false;
 
+// Add these screen state management enums 
+enum ScreenState {
+    SCREEN_SPLASH,
+    SCREEN_MAIN_MENU,
+    SCREEN_VO2_METRICS,
+    SCREEN_RESPIRATORY,
+    SCREEN_THRESHOLDS,
+    SCREEN_CALORIMETRY,
+    SCREEN_ENVIRONMENT,
+    SCREEN_MODE_SELECTION,
+    SCREEN_CONNECTIVITY,
+    SCREEN_CONFIGURATION,
+    SCREEN_ISO_STANDARDS
+};
+
+// Navigation and UI state tracking
+ScreenState currentScreen = SCREEN_SPLASH;
+ScreenState previousScreen = SCREEN_SPLASH;
+bool screenNeedsUpdate = true;
+int menuSelection = 0;
+int maxMenuItems = 4;
+
+// UI Color definitions
+#define UI_TEXT_COLOR TFT_WHITE
+#define UI_BACKGROUND TFT_BLACK
+#define UI_HIGHLIGHT TFT_CYAN
+#define UI_PANEL TFT_NAVY
+#define UI_WARNING TFT_RED
+#define UI_SUCCESS TFT_GREEN
+#define UI_INFO TFT_BLUE
+
 // ===================== Prototipos de Funciones =====================
 bool checkEnvironmentalStability();
 void showError(const char* message);
@@ -1120,6 +1151,16 @@ void checkConnectivity() {
         }
     }
 }
+
+// Forward declarations of new navigation functions
+void drawMenu(const char* title, const char* options[], int numOptions, int selectedIndex);
+void handleMenuNavigation(int direction);
+void handleMenuSelection();
+void drawButton(int x, int y, int width, int height, const char* text, uint16_t color);
+bool isButtonPressed(int x, int y, int width, int height);
+void showNavigationHint(const char* hint);
+void transitionToScreen(ScreenState newScreen);
+
 // ===================== Implementación de Funciones =====================
 
 void calculateCalorimetry() {
@@ -1446,6 +1487,8 @@ void initializeBLE() {
 }
 
 void showSplashScreen() {
+    currentScreen = SCREEN_SPLASH;
+    
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.drawString("VO2Smart", 0, 25, 4);
@@ -1992,26 +2035,299 @@ void updateTimers() {
 // ===================== Funciones de UI =====================
 
 void updateScreen() {
-    if (screenChanged) {
+    if (screenChanged || screenNeedsUpdate) {
         drawScreen();
-        screenChanged = 0;
     }
 }
 
+// Override the original drawScreen function with our enhanced version
 void drawScreen() {
     tft.setRotation(1);
-    switch (liveData.screenNumber) {
-        case 1: drawScreen1(); break; // Mediciones principales
-        case 2: drawScreen2(); break; // Datos respiratorios
-        case 3: drawScreen3(); break; // Umbrales ventilatorios
-        case 4: drawCalorimetryScreen(); break; // Nueva pantalla de calorimetría
-        case 5: drawScreen4(); break; // Condiciones ambientales (ahora en pantalla 5)
-        case 6: drawModeSelectionScreen(); break; // Nueva pantalla selección de modo
-        case 7: drawScreen5(); break; // Conectividad (ahora en pantalla 7)
-        case 8: drawScreen6(); break; // Configuración (ahora en pantalla 8)
-        case 9: drawScreen7(); break; // Normas ISO (ahora en pantalla 9)
-        default: drawScreen1(); break;
+    
+    // Only redraw if something changed
+    if (!screenChanged && !screenNeedsUpdate) return;
+    
+    // Clear flag
+    screenChanged = 0;
+    screenNeedsUpdate = false;
+    
+    switch (currentScreen) {
+        case SCREEN_SPLASH:
+            showSplashScreen();
+            break;
+        case SCREEN_MAIN_MENU:
+            drawMainMenu();
+            break;
+        case SCREEN_VO2_METRICS:
+            drawScreen1(); // Your existing function
+            break;
+        case SCREEN_RESPIRATORY:
+            drawScreen2(); // Your existing function
+            break;
+        case SCREEN_THRESHOLDS:
+            drawScreen3(); // Your existing function
+            break;
+        case SCREEN_CALORIMETRY:
+            drawCalorimetryScreen(); // Your existing function
+            break;
+        case SCREEN_ENVIRONMENT:
+            drawScreen4(); // Your existing function
+            break;
+        case SCREEN_MODE_SELECTION:
+            drawModeSelectionScreen(); // Your existing function
+            break;
+        case SCREEN_CONNECTIVITY:
+            drawScreen5(); // Your existing function
+            break;
+        case SCREEN_CONFIGURATION:
+            drawScreen6(); // Your existing function
+            break;
+        case SCREEN_ISO_STANDARDS:
+            drawScreen7(); // Your existing function
+            break;
+        default:
+            drawScreen1(); // Default to main metrics
+            break;
     }
+    
+    // Always draw battery indicator in consistent location
+    drawBatteryIndicator();
+}
+
+// New main menu drawing function
+void drawMainMenu() {
+    tft.fillScreen(UI_BACKGROUND);
+    tft.setTextColor(UI_TEXT_COLOR, UI_BACKGROUND);
+    tft.drawCentreString("VO2SMART MENU", 120, 10, 2);
+    
+    const char* menuItems[] = {
+        "VO2 Metrics",
+        "Respiratory Data",
+        "Thresholds",
+        "Calorimetry",
+        "Environment",
+        "Mode Selection",
+        "Connectivity",
+        "Configuration",
+        "ISO Standards"
+    };
+    
+    maxMenuItems = 9;
+    
+    // Draw menu items
+    for (int i = 0; i < maxMenuItems; i++) {
+        if (i == menuSelection) {
+            // Selected item
+            tft.fillRoundRect(10, 35 + i*20, 220, 18, 3, UI_HIGHLIGHT);
+            tft.setTextColor(UI_BACKGROUND, UI_HIGHLIGHT);
+        } else {
+            // Unselected item
+            tft.setTextColor(UI_TEXT_COLOR, UI_BACKGROUND);
+        }
+        
+        tft.drawString(menuItems[i], 15, 38 + i*20, 2);
+    }
+    
+    // Draw navigation hint
+    showNavigationHint("Up/Down: Navigate, Select: Choose");
+}
+
+// Unified button handling function
+void handleButtonActions() {
+    // Reset device if both buttons held
+    if (buttonPushCounter1 > 20 && buttonPushCounter2 > 20) {
+        setWeight(); // Change weight instead of direct restart
+        screenNeedsUpdate = true;
+        return;
+    }
+    
+    // When in menu screen, handle menu navigation
+    if (currentScreen == SCREEN_MAIN_MENU) {
+        if (buttonPushCounter1 == 2) { // Button 1: Up
+            handleMenuNavigation(-1);
+        }
+        
+        if (buttonPushCounter2 == 2) { // Button 2: Down
+            handleMenuNavigation(1);
+        }
+        
+        if (buttonPushCounter1 == 3 || buttonPushCounter2 == 3) {
+            handleMenuSelection();
+        }
+    } 
+    // Mode selection screen has special handling
+    else if (currentScreen == SCREEN_MODE_SELECTION) {
+        if (buttonPushCounter1 == 3) {
+            // Decrement mode
+            currentMode = static_cast<OperationMode>((currentMode + 2) % 3);
+            demoMode = (currentMode == MODE_DEMO);
+            screenNeedsUpdate = true;
+        }
+        
+        if (buttonPushCounter2 == 3) {
+            // Increment mode
+            currentMode = static_cast<OperationMode>((currentMode + 1) % 3);
+            demoMode = (currentMode == MODE_DEMO);
+            screenNeedsUpdate = true;
+        }
+    }
+    // For other screens, just handle navigation
+    else {
+        if (buttonPushCounter1 == 2) { // Button 1: Previous
+            if (currentScreen > SCREEN_MAIN_MENU) {
+                transitionToScreen(static_cast<ScreenState>(currentScreen - 1));
+            } else {
+                transitionToScreen(SCREEN_ISO_STANDARDS);
+            }
+            screenNeedsUpdate = true;
+        }
+        
+        if (buttonPushCounter2 == 2) { // Button 2: Next
+            if (currentScreen < SCREEN_ISO_STANDARDS) {
+                transitionToScreen(static_cast<ScreenState>(currentScreen + 1));
+            } else {
+                transitionToScreen(SCREEN_VO2_METRICS);
+            }
+            screenNeedsUpdate = true;
+        }
+        
+        // Return to menu with long press of both buttons
+        if (buttonPushCounter1 >= 5 && buttonPushCounter2 >= 5 && 
+            buttonPushCounter1 < 15 && buttonPushCounter2 < 15) {
+            transitionToScreen(SCREEN_MAIN_MENU);
+            screenNeedsUpdate = true;
+        }
+    }
+    
+    // Special actions like in original code
+    if (buttonPushCounter1 >= 5 && buttonPushCounter1 < 15 && buttonPushCounter2 < 5) {
+        toggleDataTransmission();
+        screenNeedsUpdate = true;
+    }
+    
+    if (buttonPushCounter2 >= 5 && buttonPushCounter2 < 15 && buttonPushCounter1 < 5) {
+        toggleVO2Method();
+        screenNeedsUpdate = true;
+    }
+    
+    // Toggle dual connectivity
+    if (buttonPushCounter1 >= 5 && buttonPushCounter1 < 15 && 
+        buttonPushCounter2 >= 5 && buttonPushCounter2 < 15) {
+        settings.dualConnectivity = !settings.dualConnectivity;
+        saveSettings();
+        
+        // Reset connectivity services
+        if (settings.dualConnectivity) {
+            if (!wifiActive) setupWiFi();
+            if (!bleClientConnected) BLEDevice::startAdvertising();
+        } else {
+            if (!settings.useBLE) bleClientConnected = false;
+            if (!settings.useWiFi) {
+                wifiActive = false;
+                webServerActive = false;
+            }
+        }
+        screenNeedsUpdate = true;
+    }
+}
+
+// Helper for menu navigation
+void handleMenuNavigation(int direction) {
+    menuSelection += direction;
+    
+    // Wrap around
+    if (menuSelection < 0) {
+        menuSelection = maxMenuItems - 1;
+    } else if (menuSelection >= maxMenuItems) {
+        menuSelection = 0;
+    }
+    
+    screenNeedsUpdate = true;
+}
+
+// Handle menu item selection
+void handleMenuSelection() {
+    switch (menuSelection) {
+        case 0: // VO2 Metrics
+            transitionToScreen(SCREEN_VO2_METRICS);
+            break;
+        case 1: // Respiratory Data
+            transitionToScreen(SCREEN_RESPIRATORY);
+            break;
+        case 2: // Thresholds
+            transitionToScreen(SCREEN_THRESHOLDS);
+            break;
+        case 3: // Calorimetry
+            transitionToScreen(SCREEN_CALORIMETRY);
+            break;
+        case 4: // Environment
+            transitionToScreen(SCREEN_ENVIRONMENT);
+            break;
+        case 5: // Mode Selection
+            transitionToScreen(SCREEN_MODE_SELECTION);
+            break;
+        case 6: // Connectivity
+            transitionToScreen(SCREEN_CONNECTIVITY);
+            break;
+        case 7: // Configuration
+            transitionToScreen(SCREEN_CONFIGURATION);
+            break;
+        case 8: // ISO Standards
+            transitionToScreen(SCREEN_ISO_STANDARDS);
+            break;
+    }
+}
+
+// Handle screen transitions
+void transitionToScreen(ScreenState newScreen) {
+    previousScreen = currentScreen;
+    currentScreen = newScreen;
+    
+    // Map to existing screen numbers for backward compatibility
+    switch (newScreen) {
+        case SCREEN_VO2_METRICS:
+            liveData.screenNumber = 1;
+            break;
+        case SCREEN_RESPIRATORY:
+            liveData.screenNumber = 2;
+            break;
+        case SCREEN_THRESHOLDS:
+            liveData.screenNumber = 3;
+            break;
+        case SCREEN_CALORIMETRY:
+            liveData.screenNumber = 4;
+            break;
+        case SCREEN_ENVIRONMENT:
+            liveData.screenNumber = 5;
+            break;
+        case SCREEN_MODE_SELECTION:
+            liveData.screenNumber = 6;
+            break;
+        case SCREEN_CONNECTIVITY:
+            liveData.screenNumber = 7;
+            break;
+        case SCREEN_CONFIGURATION:
+            liveData.screenNumber = 8;
+            break;
+        case SCREEN_ISO_STANDARDS:
+            liveData.screenNumber = 9;
+            break;
+    }
+    
+    screenChanged = 1;
+}
+
+// UI helper functions
+void drawButton(int x, int y, int width, int height, const char* text, uint16_t color) {
+    tft.fillRoundRect(x, y, width, height, 5, color);
+    tft.drawRoundRect(x, y, width, height, 5, UI_TEXT_COLOR);
+    tft.setTextColor(UI_TEXT_COLOR, color);
+    tft.drawCentreString(text, x + width/2, y + height/2 - 4, 2);
+}
+
+void showNavigationHint(const char* hint) {
+    tft.setTextColor(UI_INFO, UI_BACKGROUND);
+    tft.drawCentreString(hint, 120, 220, 1);
 }
 
 void drawScreen1() {
@@ -2271,71 +2587,100 @@ void drawParametersScreen() {
 }
 
 void handleButtonActions() {
-    // Reiniciar dispositivo si ambos botones se mantienen presionados
+    // Reset device if both buttons held
     if (buttonPushCounter1 > 20 && buttonPushCounter2 > 20) {
-        setWeight(); // Cambiar peso en lugar de reiniciar directamente
-        screenChanged = 1;
+        setWeight(); // Change weight instead of direct restart
+        screenNeedsUpdate = true;
         return;
     }
     
-    // Navegación entre pantallas
-    if (buttonPushCounter1 == 2) { // Botón 1: Retrocede
-        liveData.screenNumber--;
-        screenChanged = 1;
-    }
-    
-    if (buttonPushCounter2 == 2) { // Botón 2: Avanza
-        liveData.screenNumber++;
-        screenChanged = 1;
-    }
-    
-    // Mode selection when on mode selection screen (screen 6)
-    if (liveData.screenNumber == 6) {
+    // When in menu screen, handle menu navigation
+    if (currentScreen == SCREEN_MAIN_MENU) {
+        if (buttonPushCounter1 == 2) { // Button 1: Up
+            handleMenuNavigation(-1);
+        }
+        
+        if (buttonPushCounter2 == 2) { // Button 2: Down
+            handleMenuNavigation(1);
+        }
+        
+        if (buttonPushCounter1 == 3 || buttonPushCounter2 == 3) {
+            handleMenuSelection();
+        }
+    } 
+    // Mode selection screen has special handling
+    else if (currentScreen == SCREEN_MODE_SELECTION) {
         if (buttonPushCounter1 == 3) {
             // Decrement mode
             currentMode = static_cast<OperationMode>((currentMode + 2) % 3);
             demoMode = (currentMode == MODE_DEMO);
-            screenChanged = 1;
+            screenNeedsUpdate = true;
         }
         
         if (buttonPushCounter2 == 3) {
             // Increment mode
             currentMode = static_cast<OperationMode>((currentMode + 1) % 3);
             demoMode = (currentMode == MODE_DEMO);
-            screenChanged = 1;
+            screenNeedsUpdate = true;
+        }
+    }
+    // For other screens, just handle navigation
+    else {
+        if (buttonPushCounter1 == 2) { // Button 1: Previous
+            if (currentScreen > SCREEN_MAIN_MENU) {
+                transitionToScreen(static_cast<ScreenState>(currentScreen - 1));
+            } else {
+                transitionToScreen(SCREEN_ISO_STANDARDS);
+            }
+            screenNeedsUpdate = true;
+        }
+        
+        if (buttonPushCounter2 == 2) { // Button 2: Next
+            if (currentScreen < SCREEN_ISO_STANDARDS) {
+                transitionToScreen(static_cast<ScreenState>(currentScreen + 1));
+            } else {
+                transitionToScreen(SCREEN_VO2_METRICS);
+            }
+            screenNeedsUpdate = true;
+        }
+        
+        // Return to menu with long press of both buttons
+        if (buttonPushCounter1 >= 5 && buttonPushCounter2 >= 5 && 
+            buttonPushCounter1 < 15 && buttonPushCounter2 < 15) {
+            transitionToScreen(SCREEN_MAIN_MENU);
+            screenNeedsUpdate = true;
         }
     }
     
-    // Acciones especiales
-    if (buttonPushCounter1 >= 5 && buttonPushCounter1 < 15) {
+    // Special actions like in original code
+    if (buttonPushCounter1 >= 5 && buttonPushCounter1 < 15 && buttonPushCounter2 < 5) {
         toggleDataTransmission();
-        screenChanged = 1;
+        screenNeedsUpdate = true;
     }
     
-    if (buttonPushCounter2 >= 5 && buttonPushCounter2 < 15) {
+    if (buttonPushCounter2 >= 5 && buttonPushCounter2 < 15 && buttonPushCounter1 < 5) {
         toggleVO2Method();
-        screenChanged = 1;
+        screenNeedsUpdate = true;
     }
     
-    // Nuevo: Toggle dual connectivity when both buttons are pressed between 5-15 times
+    // Toggle dual connectivity
     if (buttonPushCounter1 >= 5 && buttonPushCounter1 < 15 && 
         buttonPushCounter2 >= 5 && buttonPushCounter2 < 15) {
         settings.dualConnectivity = !settings.dualConnectivity;
         saveSettings();
         
-        // Reiniciar servicios de conectividad
+        // Reset connectivity services
         if (settings.dualConnectivity) {
             if (!wifiActive) setupWiFi();
             if (!bleClientConnected) BLEDevice::startAdvertising();
         } else {
-            // Si se desactiva el modo dual, mantener solo el último activo
             if (!settings.useBLE) bleClientConnected = false;
             if (!settings.useWiFi) {
                 wifiActive = false;
                 webServerActive = false;
             }
         }
-        screenChanged = 1;
+        screenNeedsUpdate = true;
     }
     
     // Mantener pantalla en rango válido (ahora con 9 pantallas)
@@ -3187,26 +3532,3 @@ void checkInitialCO2() {
         if (scd30.isAvailable()) {
             float result[3] = {0};
             scd30.getCarbonDioxideConcentration(result);
-            
-            if (!isnan(result[0]) && result[0] > 300.0 && result[0] < 600.0) {
-                sum += result[0];
-                validReadings++;
-            }
-        }
-        delay(200);
-    }
-    
-    if (validReadings > 0) {
-        liveData.initialCO2 = sum / validReadings;
-        if (DEBUG_ENABLED) {
-            Serial.print("CO2 inicial: ");
-            Serial.println(liveData.initialCO2);
-        }
-    } else {
-        // Si no hay lecturas válidas, usar valor por defecto
-        liveData.initialCO2 = 400.0;
-        if (DEBUG_ENABLED) {
-            Serial.println("Error en lecturas de CO2, usando valor por defecto");
-        }
-    }
-}

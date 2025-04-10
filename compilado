@@ -709,13 +709,13 @@ public:
 };
 
 // Estructura para almacenar registros de calibración
-struct CalibLog {
-    uint32_t timestamp;
-    float expectedVol;
-    float measuredVol;
-    float error;
-    bool passed;
-};
+//struct CalibLog {
+   // uint32_t timestamp;
+    //float expectedVol;
+   // float measuredVol;
+   // float error;
+   // bool passed;
+//};
 
 // ===================== Variables Globales =====================
 
@@ -845,7 +845,7 @@ void safetyChecks();
 // Funciones ISO
 float calculatePH2O(float temperature);
 float termISO26782(float temperature, float pressure);
-void logCalibration(float value, float refValue);
+void logCalibration(float value, float refValue, float error = 0.0);
 bool testThermalStability(float temperature, float threshold = 0.5);
 bool autoCalibrate(float measured, float expected, float tolerance = CALIBRATION_TOLERANCE);
 
@@ -2263,6 +2263,19 @@ void setWeight() {
     }
 }
 
+// Function to read filtered flow - moved to global scope
+float readFilteredFlow() {
+    float rawPressure = pressureSensor.getPressure();
+    if (!isnan(rawPressure)) {
+        if (settings.useAdvancedFilters) {
+            return filtroPresion.filtrar(rawPressure);
+        } else {
+            return rawPressure;
+        }
+    }
+    return 0.0; // Return 0 if the pressure reading is invalid
+}
+
 bool performSyringeCalibration() {
     float totalVolume = 0;
     uint32_t startTime = millis();
@@ -2271,17 +2284,6 @@ bool performSyringeCalibration() {
     uint32_t lastMeasure = millis(); // Declare and initialize lastMeasure
     while((millis() - startTime) < CALIB_TIMEOUT_MS) {
         // Medir flujo integrado
-        float readFilteredFlow() {
-            float rawPressure = pressureSensor.getPressure();
-            if (!isnan(rawPressure)) {
-                if (settings.useAdvancedFilters) {
-                    return filtroPresion.filtrar(rawPressure);
-                } else {
-                    return rawPressure;
-                }
-            }
-            return 0.0; // Return 0 if the pressure reading is invalid
-        }
         float flow = readFilteredFlow();
         totalVolume += flow * (millis() - lastMeasure) / 1000.0;
         lastMeasure = millis();
@@ -2395,7 +2397,7 @@ float termISO26782(float temperature, float pressure) {
     return (pressure - calculatePH2O(temperature)) / (PRESION_STPD - calculatePH2O(0));
 }
 
-void logCalibration(float value, float refValue, float error = 0.0) {
+void logCalibration(float value, float refValue, float error) {
     if (DEBUG_ENABLED) {
         Serial.print("Valor: "); Serial.print(value);
         Serial.print(", Valor de referencia: "); Serial.print(refValue);
@@ -2602,4 +2604,4 @@ void checkInitialCO2() {
         }
     }
 }
-hay errores
+errores

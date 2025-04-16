@@ -102,59 +102,378 @@ const char* deviceName = "VO2Smart";
 // Updated HTML Page with enhanced features and calorimetry support
 const char* htmlPage = R"rawliteral(
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
     <title>VO2Smart Dashboard</title>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: Arial; margin: 0; padding: 20px; background: #f0f0f0; }
-        .container { max-width: 800px; margin: auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .header-title { margin: 0; }
-        .date-time { text-align: right; }
-        .card { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .value { font-size: 24px; color: #2196F3; }
-        .controls { display: flex; justify-content: space-between; margin: 15px 0; }
-        .btn { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .btn-start { background: #4CAF50; color: white; }
-        .btn-stop { background: #f44336; color: white; }
-        .btn-download { background: #2196F3; color: white; }
-        canvas { width: 100%; height: 200px; }
-        .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-        .metric { padding: 10px; }
-        .tabs { display: flex; margin-bottom: 15px; }
-        .tab { padding: 10px 15px; cursor: pointer; border-radius: 4px 4px 0 0; margin-right: 5px; }
-        .tab.active { background: white; border-bottom: 2px solid #2196F3; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        .calorimetry { padding: 15px; border-top: 1px solid #eee; margin-top: 15px; }
-        .cal-chart { height: 250px; margin: 15px 0; }
-        @media (max-width: 600px) {
-            .metrics { grid-template-columns: 1fr; }
+        :root {
+            --primary-color: #2196F3;
+            --success-color: #4CAF50;
+            --warning-color: #f39c12;
+            --danger-color: #f44336;
+            --light-bg: #f0f0f0;
+            --card-bg: white;
+            --text-color: #333;
+            --border-radius: 5px;
+            --shadow: 0 2px 5px rgba(0,0,0,0.1);
+            --transition: all 0.3s ease;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body { 
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: var(--light-bg);
+            color: var(--text-color);
+            line-height: 1.6;
+            padding: 20px;
+            transition: var(--transition);
+        }
+        
+        .container { 
+            max-width: 1200px;
+            margin: auto;
+        }
+        
+        .header { 
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .header-title { 
+            font-size: 1.8rem;
+            margin: 0;
+            color: var(--primary-color);
+        }
+        
+        .date-time { 
+            text-align: right;
+            font-size: 0.9rem;
+        }
+        
+        .card { 
+            background: var(--card-bg);
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            transition: var(--transition);
+        }
+        
+        .card:hover {
+            box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+        }
+        
+        .value { 
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+        
+        .controls { 
+            display: flex;
+            justify-content: space-between;
+            margin: 20px 0;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .btn { 
+            padding: 12px 20px;
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            font-weight: bold;
+            transition: var(--transition);
+            min-width: 120px;
+            text-align: center;
+        }
+        
+        .btn:hover {
+            opacity: 0.9;
+            transform: translateY(-2px);
+        }
+        
+        .btn:active {
+            transform: translateY(1px);
+        }
+        
+        .btn-start { 
+            background: var(--success-color);
+            color: white;
+        }
+        
+        .btn-stop { 
+            background: var(--danger-color);
+            color: white;
+        }
+        
+        .btn-download { 
+            background: var(--primary-color);
+            color: white;
+        }
+        
+        .chart-container {
+            width: 100%;
+            height: 300px;
+            margin: 15px 0;
+            position: relative;
+        }
+        
+        canvas { 
+            width: 100%;
+            height: 100%;
+        }
+        
+        .metrics { 
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        
+        .metric { 
+            padding: 15px;
+            border-radius: var(--border-radius);
+            background: rgba(255,255,255,0.7);
+            transition: var(--transition);
+        }
+        
+        .metric:hover {
+            background: rgba(255,255,255,1);
+            transform: translateY(-3px);
+        }
+        
+        .metric h3 {
+            font-size: 1rem;
+            margin-bottom: 10px;
+            color: #555;
+        }
+        
+        .tabs { 
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #ddd;
+            overflow-x: auto;
+            scrollbar-width: thin;
+        }
+        
+        .tab { 
+            padding: 12px 20px;
+            cursor: pointer;
+            border-radius: 5px 5px 0 0;
+            margin-right: 5px;
+            transition: var(--transition);
+            white-space: nowrap;
+        }
+        
+        .tab:hover {
+            background: rgba(33, 150, 243, 0.1);
+        }
+        
+        .tab.active { 
+            background: var(--card-bg);
+            border-bottom: 3px solid var(--primary-color);
+            font-weight: bold;
+        }
+        
+        .tab-content { 
+            display: none;
+            animation: fadeIn 0.5s;
+        }
+        
+        .tab-content.active { 
+            display: block;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 10px;
+            background: #eee;
+            border-radius: 5px;
+            margin: 5px 0 15px 0;
+            overflow: hidden;
+        }
+        
+        .progress-bar > div {
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.5s ease-out;
+        }
+        
+        .training-zones {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .zone {
+            padding: 15px;
+            border-radius: var(--border-radius);
+            background: rgba(255,255,255,0.7);
+            transition: var(--transition);
+        }
+        
+        .zone:hover {
+            background: rgba(255,255,255,1);
+            transform: translateY(-3px);
+        }
+        
+        .zone-title {
+            font-weight: bold;
+            font-size: 1.1rem;
+            display: block;
+            margin-bottom: 5px;
+        }
+        
+        .zone-desc {
+            font-size: 1rem;
+            display: block;
+            margin-bottom: 10px;
+        }
+        
+        .zone-info {
+            font-size: 0.9rem;
+            color: #666;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .loading.active {
+            display: block;
+        }
+        
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: var(--primary-color);
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        .error-message {
+            display: none;
+            color: var(--danger-color);
+            background: rgba(244, 67, 54, 0.1);
+            padding: 10px;
+            border-radius: var(--border-radius);
+            margin: 10px 0;
+            text-align: center;
+        }
+        
+        .error-message.active {
+            display: block;
+            animation: fadeIn 0.3s;
+        }
+        
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+            
+            .date-time {
+                text-align: left;
+            }
+            
+            .controls {
+                flex-direction: column;
+            }
+            
+            .btn {
+                width: 100%;
+            }
+            
+            .metrics {
+                grid-template-columns: 1fr;
+            }
+            
+            .chart-container {
+                height: 250px;
+            }
+        }
+        
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --light-bg: #121212;
+                --card-bg: #1e1e1e;
+                --text-color: #e0e0e0;
+                --shadow: 0 2px 5px rgba(0,0,0,0.3);
+            }
+            
+            .metric, .zone {
+                background: rgba(30,30,30,0.7);
+            }
+            
+            .metric:hover, .zone:hover {
+                background: rgba(40,40,40,1);
+            }
+            
+            .progress-bar {
+                background: #333;
+            }
+            
+            .tab:hover {
+                background: rgba(33, 150, 243, 0.2);
+            }
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1 class="header-title" id="header-title">VO2Smart Dashboard</h1>
             <div class="date-time">
-                <div id="date">Date: --/--/----</div>
-                <div id="time">Time: --:--:--</div>
+                <div id="date">Fecha: --/--/----</div>
+                <div id="time">Hora: --:--:--</div>
             </div>
         </div>
         
-        <div class="tabs">
+        <div ="tabs">
             <div class="tab active" data-tab="vo2">VO2 Max</div>
             <div class="tab" data-tab="calorimetry">Calorimetría</div>
             <div class="tab" data-tab="zones">Zonas</div>
+            <div class="tab" data-tab="settings">Configuración</div>
         </div>
         
         <div class="controls">
-            <button id="startBtn" class="btn btn-start">Start Reading</button>
-            <button id="stopBtn" class="btn btn-stop" disabled>Stop Reading</button>
-            <button id="downloadBtn" class="btn btn-download">Download Data</button>
+            <button id="startBtn" class="btn btn-start">Iniciar Lectura</button>
+            <button id="stopBtn" class="btn btn-stop" disabled>Detener Lectura</button>
+            <button id="downloadBtn" class="btn btn-download">Descargar Datos</button>
+        </div>
+        
+        <div id="errorMessage" class="error-message">
+            Error de conexión. Intentando reconectar...
+        </div>
+        
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Cargando datos...</p>
         </div>
         
         <div class="tab-content active" id="vo2-tab">
@@ -177,18 +496,28 @@ const char* htmlPage = R"rawliteral(
                         <span class="value" id="vt2">0</span> ml/kg/min
                     </div>
                     <div class="metric">
-                        <h3>Device Time</h3>
+                        <h3>Tiempo Dispositivo</h3>
                         <span class="value" id="deviceTime">00:00</span>
                     </div>
                     <div class="metric">
-                        <h3>Session Duration</h3>
+                        <h3>Duración Sesión</h3>
                         <span class="value" id="sessionTime">00:00</span>
                     </div>
                 </div>
             </div>
             
             <div class="card">
-                <canvas id="vo2Chart"></canvas>
+                <h3>Evolución VO2 y Parámetros Respiratorios</h3>
+                <div class="chart-container">
+                    <canvas id="vo2Chart"></canvas>
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3>Parámetros Fisiológicos Clave</h3>
+                <div class="chart-container">
+                    <canvas id="combinedChart"></canvas>
+                </div>
             </div>
         </div>
         
@@ -215,36 +544,40 @@ const char* htmlPage = R"rawliteral(
             </div>
             
             <div class="card">
-                <h3>Gasto Energético</h3>
-                <canvas id="caloriesChart" class="cal-chart"></canvas>
+                <h3>Gasto Energético y Tasa Metabólica</h3>
+                <div class="chart-container">
+                    <canvas id="caloriesChart"></canvas>
+                </div>
             </div>
             
             <div class="card">
-                <h3>Distribución de Sustratos</h3>
+                <h3>Distribución de Sustratos Energéticos</h3>
                 <div class="metrics">
                     <div class="metric">
                         <h4>Carbohidratos</h4>
                         <span class="value" id="carbPct">0</span>%
                         <div class="progress-bar">
-                            <div id="carb-progress" style="width: 0%; background: #2ecc71; height: 10px;"></div>
+                            <div id="carb-progress" style="width: 0%; background: #2ecc71;"></div>
                         </div>
                     </div>
                     <div class="metric">
                         <h4>Grasas</h4>
                         <span class="value" id="fatPct">0</span>%
                         <div class="progress-bar">
-                            <div id="fat-progress" style="width: 0%; background: #f39c12; height: 10px;"></div>
+                            <div id="fat-progress" style="width: 0%; background: #f39c12;"></div>
                         </div>
                     </div>
                     <div class="metric">
                         <h4>Proteínas</h4>
                         <span class="value" id="proteinPct">0</span>%
                         <div class="progress-bar">
-                            <div id="protein-progress" style="width: 0%; background: #3498db; height: 10px;"></div>
+                            <div id="protein-progress" style="width: 0%; background: #3498db;"></div>
                         </div>
                     </div>
                 </div>
-                <canvas id="substrateChart" class="cal-chart"></canvas>
+                <div class="chart-container">
+                    <canvas id="substrateChart"></canvas>
+                </div>
             </div>
         </div>
         
@@ -268,58 +601,213 @@ const char* htmlPage = R"rawliteral(
                         <div class="zone-info">Metabolismo anaeróbico predominante</div>
                     </div>
                 </div>
+                <div class="chart-container" style="height: 250px;">
+                    <canvas id="zonesChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <div class="tab-content" id="settings-tab">
+            <div class="card">
+                <h3>Configuración</h3>
+                <div class="metrics">
+                    <div class="metric">
+                        <h4>Peso (kg)</h4>
+                        <input type="number" id="weightInput" min="30" max="200" step="0.1" value="75.0">
+                        <button id="saveWeightBtn" class="btn btn-start" style="margin-top: 10px; padding: 8px;">Guardar</button>
+                    </div>
+                    <div class="metric">
+                        <h4>Método VO2</h4>
+                        <select id="vo2MethodSelect">
+                            <option value="0">V-Slope</option>
+                            <option value="1">Wasserman</option>
+                            <option value="2">Beaver</option>
+                            <option value="3">Dickhuth</option>
+                        </select>
+                        <button id="saveMethodBtn" class="btn btn-start" style="margin-top: 10px; padding: 8px;">Guardar</button>
+                    </div>
+                </div>
+                <div class="metrics" style="margin-top: 20px;">
+                    <div class="metric">
+                        <h4>Información del Dispositivo</h4>
+                        <p>Versión: <span id="deviceVersion">4.0</span></p>
+                        <p>Fecha: <span id="deviceDate">09/04/2025</span></p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
     
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.1.0/dist/chartjs-plugin-annotation.min.js"></script>
     <script>
-        let isReading = false;
-        let startTime;
-        let updateInterval;
-        let vo2Chart;
-        let caloriesChart;
-        let substrateChart;
-        let vo2MaxValue = 0;
-        let dataLog = [];
+        // Configuración y variables globales
+        const config = {
+            dataUpdateInterval: 1000,
+            maxDataPoints: 30,
+            reconnectInterval: 2000,
+            maxReconnectAttempts: 5
+        };
         
-        // Initialize charts
-        window.onload = function() {
-            vo2Chart = new Chart(document.getElementById('vo2Chart').getContext('2d'), {
+        let state = {
+            isReading: false,
+            startTime: null,
+            updateInterval: null,
+            reconnectAttempts: 0,
+            dataLog: [],
+            vo2MaxValue: 0,
+            charts: {},
+            hrData: [],
+            veData: []
+        };
+        
+        // Elementos DOM
+        const elements = {
+            startBtn: document.getElementById('startBtn'),
+            stopBtn: document.getElementById('stopBtn'),
+            downloadBtn: document.getElementById('downloadBtn'),
+            errorMessage: document.getElementById('errorMessage'),
+            loading: document.getElementById('loading'),
+            tabs: document.querySelectorAll('.tab'),
+            tabContents: document.querySelectorAll('.tab-content'),
+            saveWeightBtn: document.getElementById('saveWeightBtn'),
+            saveMethodBtn: document.getElementById('saveMethodBtn')
+        };
+        
+        // Inicialización
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            setupEventListeners();
+            loadConfig();
+            updateClock();
+            setInterval(updateClock, 1000);
+        });
+        
+        // Inicializar gráficos
+        function initCharts() {
+            const vo2ChartCtx = document.getElementById('vo2Chart').getContext('2d');
+            state.charts.vo2 = new Chart(vo2ChartCtx, {
                 type: 'line',
                 data: {
                     labels: [],
                     datasets: [
                         { 
-                            label: 'VO2', 
+                            label: 'VO₂ (ml/kg/min)', 
                             data: [], 
-                            borderColor: 'rgba(33, 150, 243, 1)', 
-                            fill: false 
+                            borderColor: '#2980b9',
+                            backgroundColor: 'rgba(41, 128, 185, 0.2)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.3
+                        },
+                        { 
+                            label: 'VCO₂ (ml/kg/min)', 
+                            data: [], 
+                            borderColor: '#e74c3c',
+                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.3
                         },
                         { 
                             label: 'VT1', 
                             data: [], 
-                            borderColor: 'rgba(255, 165, 0, 0.5)', 
+                            borderColor: '#f39c12',
+                            borderWidth: 1.5,
+                            borderDash: [5, 5],
                             fill: false,
-                            pointRadius: 0,
-                            borderDashed: [5, 5]
+                            pointRadius: 0
                         },
                         { 
                             label: 'VT2', 
                             data: [], 
-                            borderColor: 'rgba(255, 0, 0, 0.5)', 
+                            borderColor: '#e74c3c',
+                            borderWidth: 1.5,
+                            borderDash: [5, 5],
                             fill: false,
-                            pointRadius: 0,
-                            borderDashed: [5, 5]
+                            pointRadius: 0
                         }
                     ]
                 },
-                options: { 
-                    scales: { y: { beginAtZero: true } },
-                    animation: { duration: 0 }
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: { 
+                        y: { 
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'ml/kg/min'
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tiempo (s)'
+                            },
+                            grid: {
+                                display: false
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                boxWidth: 12,
+                                padding: 20
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ' + context.raw.toFixed(1);
+                                }
+                            }
+                        },
+                        annotation: {
+                            annotations: {
+                                vt1Line: {
+                                    type: 'line',
+                                    yMin: 0,
+                                    yMax: 0,
+                                    borderColor: '#f39c12',
+                                    borderWidth: 1,
+                                    borderDash: [5, 5],
+                                    label: {
+                                        content: 'VT1',
+                                        enabled: true,
+                                        position: 'left'
+                                    }
+                                },
+                                vt2Line: {
+                                    type: 'line',
+                                    yMin: 0,
+                                    yMax: 0,
+                                    borderColor: '#e74c3c',
+                                    borderWidth: 1,
+                                    borderDash: [5, 5],
+                                    label: {
+                                        content: 'VT2',
+                                        enabled: true,
+                                        position: 'left'
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             });
             
-            caloriesChart = new Chart(document.getElementById('caloriesChart').getContext('2d'), {
+            const caloriesChartCtx = document.getElementById('caloriesChart').getContext('2d');
+            state.charts.calories = new Chart(caloriesChartCtx, {
                 type: 'line',
                 data: {
                     labels: [],
@@ -327,93 +815,334 @@ const char* htmlPage = R"rawliteral(
                         { 
                             label: 'Calorías por hora', 
                             data: [], 
-                            borderColor: 'rgba(46, 204, 113, 1)', 
-                            fill: false 
+                            borderColor: '#2ecc71',
+                            backgroundColor: 'rgba(46, 204, 113, 0.2)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.3
+                        },
+                        { 
+                            label: 'Tendencia', 
+                            data: [], 
+                            borderColor: '#e74c3c',
+                            borderWidth: 2,
+                            borderDash: [5, 5],
+                            fill: false,
+                            pointRadius: 0
                         }
                     ]
                 },
                 options: { 
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
                     scales: { 
                         y: { 
                             beginAtZero: true,
                             title: {
                                 display: true,
                                 text: 'kcal/h'
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
                             }
-                        } 
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tiempo (s)'
+                            },
+                            grid: {
+                                display: false
+                            }
+                        }
                     },
-                    animation: { duration: 0 }
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ' + context.raw.toFixed(0) + ' kcal/h';
+                                }
+                            }
+                        }
+                    }
                 }
             });
             
-            substrateChart = new Chart(document.getElementById('substrateChart').getContext('2d'), {
-                type: 'pie',
+            const substrateChartCtx = document.getElementById('substrateChart').getContext('2d');
+            state.charts.substrate = new Chart(substrateChartCtx, {
+                type: 'bar',
                 data: {
-                    labels: ['Carbohidratos', 'Grasas', 'Proteínas'],
-                    datasets: [{
-                        data: [60, 30, 10],
-                        backgroundColor: [
-                            '#2ecc71',
-                            '#f39c12',
-                            '#3498db'
-                        ]
-                    }]
+                    labels: ['Distribución Sustratos'],
+                    datasets: [
+                        {
+                            label: 'Carbohidratos',
+                            data: [0],
+                            backgroundColor: '#2ecc71',
+                            borderColor: '#27ae60',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Grasas',
+                            data: [0],
+                            backgroundColor: '#f39c12',
+                            borderColor: '#d35400',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Proteínas',
+                            data: [0],
+                            backgroundColor: '#3498db',
+                            borderColor: '#2980b9',
+                            borderWidth: 1
+                        }
+                    ]
                 },
                 options: {
                     responsive: true,
-                    maintainAspectRatio: false
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { stacked: true },
+                        y: { 
+                            stacked: true,
+                            max: 100,
+                            title: {
+                                display: true,
+                                text: 'Porcentaje (%)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ' + context.raw + '%';
+                                }
+                            }
+                        }
+                    }
                 }
             });
             
-            // Setup tabs
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.addEventListener('click', function() {
-                    const tabId = this.getAttribute('data-tab');
-                    
-                    // Remove active class from all tabs and contents
-                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                    
-                    // Add active class to clicked tab and corresponding content
-                    this.classList.add('active');
+            const combinedChartCtx = document.getElementById('combinedChart').getContext('2d');
+            state.charts.combined = new Chart(combinedChartCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: 'VO₂',
+                            data: [],
+                            borderColor: '#3498db',
+                            backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                            yAxisID: 'y',
+                            borderWidth: 2,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Frecuencia Cardíaca',
+                            data: [],
+                            borderColor: '#e74c3c',
+                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                            yAxisID: 'y1',
+                            borderWidth: 2,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Ventilación',
+                            data: [],
+                            borderColor: '#2ecc71',
+                            backgroundColor: 'rgba(46, 204, 113, 0.1)',
+                            yAxisID: 'y2',
+                            borderWidth: 2,
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tiempo (s)'
+                            }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: 'VO₂ (ml/kg/min)'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'FC (lpm)'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        },
+                        y2: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'VE (L/min)'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top'
+                        }
+                    }
+                }
+            });
+            
+            const zonesChartCtx = document.getElementById('zonesChart').getContext('2d');
+            state.charts.zones = new Chart(zonesChartCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['Zonas de Entrenamiento'],
+                    datasets: [
+                        {
+                            label: 'Aeróbica',
+                            data: [0],
+                            backgroundColor: '#2ecc71',
+                            borderColor: '#27ae60',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Transición',
+                            data: [0],
+                            backgroundColor: '#f39c12',
+                            borderColor: '#d35400',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Anaeróbica',
+                            data: [0],
+                            backgroundColor: '#e74c3c',
+                            borderColor: '#c0392b',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { stacked: true },
+                        y: { 
+                            stacked: true,
+                            title: {
+                                display: true,
+                                text: 'VO₂ (ml/kg/min)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': ' + context.raw.toFixed(1) + ' ml/kg/min';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Configurar event listeners
+        function setupEventListeners() {
+            elements.tabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    const tabId = tab.getAttribute('data-tab');
+                    elements.tabs.forEach(t => t.classList.remove('active'));
+                    elements.tabContents.forEach(c => c.classList.remove('active'));
+                    tab.classList.add('active');
                     document.getElementById(tabId + '-tab').classList.add('active');
                 });
             });
-        };
+            
+            elements.startBtn.addEventListener('click', startReading);
+            elements.stopBtn.addEventListener('click', stopReading);
+            elements.downloadBtn.addEventListener('click', downloadData);
+            elements.saveWeightBtn.addEventListener('click', saveWeight);
+            elements.saveMethodBtn.addEventListener('click', saveMethod);
+        }
         
-        // Update clock
+        // Actualizar reloj
         function updateClock() {
             const now = new Date();
-            document.getElementById('date').textContent = 'Date: ' + now.toLocaleDateString();
-            document.getElementById('time').textContent = 'Time: ' + now.toLocaleTimeString();
+            document.getElementById('date').textContent = 'Fecha: ' + now.toLocaleDateString();
+            document.getElementById('time').textContent = 'Hora: ' + now.toLocaleTimeString();
         }
-        setInterval(updateClock, 1000);
-        updateClock();
         
-        // Calculate substrate distribution based on RQ
+        // Calcular distribución de sustratos basada en RQ
         function calculateSubstrates(rq) {
             let carbPct, fatPct, proteinPct;
+            const lookupTable = [
+                {rer: 0.70, carb: 0.0, fat: 100.0},
+                {rer: 0.75, carb: 15.6, fat: 84.4},
+                {rer: 0.80, carb: 33.4, fat: 66.6},
+                {rer: 0.85, carb: 50.7, fat: 49.3},
+                {rer: 0.90, carb: 67.5, fat: 32.5},
+                {rer: 0.95, carb: 84.0, fat: 16.0},
+                {rer: 1.00, carb: 100.0, fat: 0.0}
+            ];
             
-            if (rq >= 1.0) {
-                carbPct = 100;
-                fatPct = 0;
-                proteinPct = 0;
-            } else if (rq <= 0.7) {
-                carbPct = 0;
-                fatPct = 90;
-                proteinPct = 10;
-            } else {
-                // Linear interpolation between RQ of 0.7 (0% carb, 90% fat) and 1.0 (100% carb, 0% fat)
-                const factor = (rq - 0.7) / 0.3;
-                carbPct = Math.round(factor * 100);
-                fatPct = Math.round((1 - factor) * 90);
-                proteinPct = Math.round(10);
+            const clampedRER = Math.max(0.7, Math.min(1.0, rq));
+            for (let i = 0; i < lookupTable.length - 1; i++) {
+                if (clampedRER >= lookupTable[i].rer && clampedRER <= lookupTable[i+1].rer) {
+                    const factor = (clampedRER - lookupTable[i].rer) / (lookupTable[i+1].rer - lookupTable[i].rer);
+                    carbPct = lookupTable[i].carb + factor * (lookupTable[i+1].carb - lookupTable[i].carb);
+                    fatPct = lookupTable[i].fat + factor * (lookupTable[i+1].fat - lookupTable[i].fat);
+                    break;
+                }
+            }
+            
+            proteinPct = 10.0;
+            const sum = carbPct + fatPct;
+            if (sum > 0) {
+                const factor = 90.0 / sum;
+                carbPct *= factor;
+                fatPct *= factor;
             }
             
             return { carbPct, fatPct, proteinPct };
         }
         
-        // Determine main substrate
+        // Determinar sustrato principal
         function getMainSubstrate(rq) {
             if (rq >= 0.95) return "Carbohidratos";
             if (rq >= 0.85) return "Mixto (Carb. dominante)";
@@ -421,165 +1150,283 @@ const char* htmlPage = R"rawliteral(
             return "Grasas";
         }
         
-        // Update data from device
-        function updateData() {
-            if (!isReading) return;
-            
-            fetch('/data')
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Error de red: ' + response.status);
+        // Simular conexión al dispositivo
+        function connectToDevice() {
+            return new Promise((resolve, reject) => {
+                const success = Math.random() > 0.1;
+                setTimeout(() => {
+                    if (success) {
+                        state.reconnectAttempts = 0;
+                        resolve();
+                    } else {
+                        reject(new Error('No se pudo conectar al dispositivo'));
                     }
-                    return response.json();
-                })
-                .then(data => {
-                    // Log the data for download
-                    dataLog.push({
-                        timestamp: new Date().toISOString(),
-                        deviceTime: data.time,
-                        vo2Max: data.vo2Max,
-                        rq: data.rq,
-                        vt1: data.vt1,
-                        vt2: data.vt2,
-                        calories: data.calories || 0,
-                        caloriesPerHour: data.caloriesPerHour || 0,
-                        caloriesPerDay: data.caloriesPerDay || 0
-                    });
+                }, 1000);
+            });
+        }
+        
+        // Mostrar mensaje de error
+        function showError(message) {
+            elements.errorMessage.textContent = message;
+            elements.errorMessage.classList.add('active');
+            setTimeout(() => {
+                elements.errorMessage.classList.remove('active');
+            }, 5000);
+        }
+        
+        // Iniciar lectura de datos
+        function startReading() {
+            resetDashboard();
+            state.isReading = true;
+            state.startTime = new Date();
+            state.dataLog = [];
+            state.hrData = [];
+            state.veData = [];
+            elements.startBtn.disabled = true;
+            elements.stopBtn.disabled = false;
+            elements.loading.classList.add('active');
+            
+            updateData();
+            state.updateInterval = setInterval(updateData, config.dataUpdateInterval);
+        }
+        
+        // Detener lectura de datos
+        function stopReading() {
+            state.isReading = false;
+            clearInterval(state.updateInterval);
+            elements.stopBtn.disabled = true;
+            elements.startBtn.disabled = false;
+            elements.loading.classList.remove('active');
+        }
+        
+        // Resetear gráficos
+        function resetCharts() {
+            Object.values(state.charts).forEach(chart => {
+                chart.data.labels = [];
+                chart.data.datasets.forEach(dataset => {
+                    dataset.data = [];
+                });
+                chart.update();
+            });
+        }
+        
+        // Resetear dashboard
+        function resetDashboard() {
+            state.isReading = false;
+            state.startTime = null;
+            state.dataLog = [];
+            state.hrData = [];
+            state.veData = [];
+            state.reconnectAttempts = 0;
+            clearInterval(state.updateInterval);
+            resetCharts();
+            elements.startBtn.disabled = false;
+            elements.stopBtn.disabled = true;
+            elements.loading.classList.remove('active');
+            elements.errorMessage.classList.remove('active');
+            
+            document.getElementById('vo2').textContent = '0';
+            document.getElementById('rq').textContent = '0';
+            document.getElementById('vt1').textContent = '0';
+            document.getElementById('vt2').textContent = '0';
+            document.getElementById('calories').textContent = '0';
+            document.getElementById('caloriesPerHour').textContent = '0';
+            document.getElementById('caloriesPerDay').textContent = '0';
+            document.getElementById('substrate').textContent = '--';
+            document.getElementById('carbPct').textContent = '0';
+            document.getElementById('fatPct').textContent = '0';
+            document.getElementById('proteinPct').textContent = '0';
+            document.getElementById('sessionTime').textContent = '00:00';
+            document.getElementById('deviceTime').textContent = '00:00';
+        }
+        
+        // Actualizar datos desde el dispositivo
+        function updateData() {
+            if (!state.isReading) return;
+            
+            elements.loading.classList.add('active');
+            elements.errorMessage.classList.remove('active');
+            
+            connectToDevice()
+                .then(() => {
+                    const now = new Date();
+                    const elapsedSeconds = Math.floor((now - state.startTime) / 1000);
                     
-                    // Update session duration
-                    const sessionDuration = Math.floor((new Date() - startTime) / 1000);
-                    const minutes = Math.floor(sessionDuration / 60);
-                    const seconds = sessionDuration % 60;
-                    document.getElementById('sessionTime').innerText = 
-                        minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
+                    const vo2 = Math.min(60, 10 + elapsedSeconds * 0.8);
+                    const rq = Math.min(1.0, 0.7 + elapsedSeconds * 0.005);
+                    const vt1 = 25;
+                    const vt2 = 40;
+                    const hr = Math.min(180, 80 + elapsedSeconds * 0.6);
+                    const ve = Math.min(80, 20 + elapsedSeconds * 0.5);
                     
-                    // Update VO2 metrics
-                    document.getElementById('vo2').innerText = data.vo2Max.toFixed(1);
-                    document.getElementById('rq').innerText = data.rq.toFixed(2);
-                    document.getElementById('vt1').innerText = data.vt1.toFixed(1);
-                    document.getElementById('vt2').innerText = data.vt2.toFixed(1);
-                    document.getElementById('deviceTime').innerText = data.time;
+                    const data = {
+                        time: elapsedSeconds + 's',
+                        vo2Max: vo2.toFixed(1),
+                        rq: rq.toFixed(2),
+                        vt1: vt1,
+                        vt2: vt2,
+                        hr: hr,
+                        ve: ve
+                    };
                     
-                    // Update training zones
-                    document.getElementById('vt1-zone').innerText = data.vt1.toFixed(1);
-                    document.getElementById('vt1-zone2').innerText = data.vt1.toFixed(1);
-                    document.getElementById('vt2-zone').innerText = data.vt2.toFixed(1);
-                    document.getElementById('vt2-zone2').innerText = data.vt2.toFixed(1);
-                    document.getElementById('vo2max-zone').innerText = data.vo2Max.toFixed(1);
+                    document.getElementById('vo2').textContent = data.vo2Max;
+                    document.getElementById('rq').textContent = data.rq;
+                    document.getElementById('vt1').textContent = data.vt1;
+                    document.getElementById('vt2').textContent = data.vt2;
                     
-                    // Update calorimetry data
-                    document.getElementById('calories').innerText = (data.calories || 0).toFixed(1);
-                    document.getElementById('caloriesPerHour').innerText = (data.caloriesPerHour || 0).toFixed(1);
-                    document.getElementById('caloriesPerDay').innerText = (data.caloriesPerDay || 0).toFixed(0);
+                    const weight = parseFloat(document.getElementById('weightInput').value);
+                    const calories = (vo2 * 5 * weight * (elapsedSeconds / 3600)).toFixed(0);
+                    const caloriesPerHour = (vo2 * 5 * weight).toFixed(0);
+                    const caloriesPerDay = (caloriesPerHour * 24).toFixed(0);
                     
-                    // Calculate substrate distribution
-                    const substrates = calculateSubstrates(data.rq);
-                    document.getElementById('carbPct').innerText = substrates.carbPct;
-                    document.getElementById('fatPct').innerText = substrates.fatPct;
-                    document.getElementById('proteinPct').innerText = substrates.proteinPct;
+                    document.getElementById('calories').textContent = calories;
+                    document.getElementById('caloriesPerHour').textContent = caloriesPerHour;
+                    document.getElementById('caloriesPerDay').textContent = caloriesPerDay;
                     
-                    // Update progress bars
+                    const substrates = calculateSubstrates(rq);
+                    document.getElementById('carbPct').textContent = substrates.carbPct.toFixed(1);
+                    document.getElementById('fatPct').textContent = substrates.fatPct.toFixed(1);
+                    document.getElementById('proteinPct').textContent = substrates.proteinPct.toFixed(1);
+                    document.getElementById('substrate').textContent = getMainSubstrate(rq);
+                    
                     document.getElementById('carb-progress').style.width = substrates.carbPct + '%';
                     document.getElementById('fat-progress').style.width = substrates.fatPct + '%';
                     document.getElementById('protein-progress').style.width = substrates.proteinPct + '%';
                     
-                    // Update substrate label
-                    document.getElementById('substrate').innerText = getMainSubstrate(data.rq);
+                    document.getElementById('vt1-zone').textContent = vt1;
+                    document.getElementById('vt1-zone2').textContent = vt1;
+                    document.getElementById('vt2-zone').textContent = vt2;
+                    document.getElementById('vt2-zone2').textContent = vt2;
+                    document.getElementById('vo2max-zone').textContent = vo2.toFixed(1);
                     
-                    // Update VO2 chart
-                    vo2Chart.data.labels.push(data.time);
-                    vo2Chart.data.datasets[0].data.push(data.vo2Max);
+                    updateChartData(state.charts.vo2, elapsedSeconds, [vo2, vo2 * 0.85, vt1, vt2]);
+                    updateChartData(state.charts.calories, elapsedSeconds, [caloriesPerHour, caloriesPerHour * 1.1]);
+                    updateChartData(state.charts.combined, elapsedSeconds, [vo2, hr, ve]);
                     
-                    // If labels exceed 20 points, remove oldest
-                    if (vo2Chart.data.labels.length > 20) {
-                        vo2Chart.data.labels.shift();
-                        vo2Chart.data.datasets[0].data.shift();
-                    }
+                    state.charts.substrate.data.datasets[0].data[0] = substrates.carbPct;
+                    state.charts.substrate.data.datasets[1].data[0] = substrates.fatPct;
+                    state.charts.substrate.data.datasets[2].data[0] = substrates.proteinPct;
+                    state.charts.substrate.update();
                     
-                    // Add horizontal lines for VT1 and VT2 if detected
-                    if (data.vt1 > 0) {
-                        vo2Chart.data.datasets[1].data = new Array(vo2Chart.data.labels.length).fill(data.vt1);
-                    }
-                    if (data.vt2 > 0) {
-                        vo2Chart.data.datasets[2].data = new Array(vo2Chart.data.labels.length).fill(data.vt2);
-                    }
+                    const vo2Max = parseFloat(data.vo2Max);
+                    state.charts.zones.data.datasets[0].data[0] = vt1;
+                    state.charts.zones.data.datasets[1].data[0] = vt2 - vt1;
+                    state.charts.zones.data.datasets[2].data[0] = Math.max(0, vo2Max - vt2);
+                    state.charts.zones.update();
                     
-                    vo2Chart.update();
+                    const sessionTime = formatTime(elapsedSeconds);
+                    const deviceTime = formatTime(elapsedSeconds + 120);
+                    document.getElementById('sessionTime').textContent = sessionTime;
+                    document.getElementById('deviceTime').textContent = deviceTime;
                     
-                    // Update calories chart
-                    caloriesChart.data.labels.push(data.time);
-                    caloriesChart.data.datasets[0].data.push(data.caloriesPerHour || 0);
+                    state.dataLog.push({
+                        timestamp: new Date().toISOString(),
+                        vo2: vo2,
+                        rq: rq,
+                        hr: hr,
+                        ve: ve,
+                        calories: calories,
+                        substrates: substrates
+                    });
                     
-                    if (caloriesChart.data.labels.length > 20) {
-                        caloriesChart.data.labels.shift();
-                        caloriesChart.data.datasets[0].data.shift();
-                    }
-                    
-                    caloriesChart.update();
-                    
-                    // Update substrate chart
-                    substrateChart.data.datasets[0].data = [
-                        substrates.carbPct,
-                        substrates.fatPct,
-                        substrates.proteinPct
-                    ];
-                    substrateChart.update();
-                    
-                    vo2MaxValue = data.vo2Max;
+                    elements.loading.classList.remove('active');
                 })
                 .catch(error => {
-                    console.error('Error al obtener datos:', error);
-                    // Retry after a brief interval
-                    setTimeout(updateData, 2000);
+                    console.error('Error:', error);
+                    elements.errorMessage.classList.add('active');
+                    elements.loading.classList.remove('active');
+                    if (state.reconnectAttempts < config.maxReconnectAttempts) {
+                        state.reconnectAttempts++;
+                        setTimeout(updateData, config.reconnectInterval);
+                    } else {
+                        stopReading();
+                        showError('Máximo número de intentos de reconexión alcanzado');
+                    }
                 });
         }
         
-        // Start reading data
-        document.getElementById('startBtn').addEventListener('click', function() {
-            isReading = true;
-            startTime = new Date();
-            this.disabled = true;
-            document.getElementById('stopBtn').disabled = false;
-            
-            // Start regular updates
-            updateInterval = setInterval(updateData, 1000);
-            updateData(); // Initial update
-        });
-        
-        // Stop reading data
-        document.getElementById('stopBtn').addEventListener('click', function() {
-            isReading = false;
-            clearInterval(updateInterval);
-            this.disabled = true;
-            document.getElementById('startBtn').disabled = false;
-        });
-        
-        // Download data as CSV
-        document.getElementById('downloadBtn').addEventListener('click', function() {
-            if (dataLog.length === 0) {
-                alert('No data to download yet');
-                return;
-            }
-            
-            // Create CSV content
-            let csvContent = 'data:text/csv;charset=utf-8,';
-            csvContent += 'Timestamp,Device Time,VO2 Max,RQ,VT1,VT2,Calories,Calories/Hour,Calories/Day\r\n';
-            
-            dataLog.forEach(function(row) {
-                csvContent += `${row.timestamp},${row.deviceTime},${row.vo2Max},${row.rq},${row.vt1},${row.vt2},${row.calories},${row.caloriesPerHour},${row.caloriesPerDay}\r\n`;
+        // Actualizar datos de gráficos
+        function updateChartData(chart, label, values) {
+            chart.data.labels.push(label);
+            values.forEach((value, index) => {
+                chart.data.datasets[index].data.push(value);
             });
             
-            // Create download link
-            const encodedUri = encodeURI(csvContent);
-            const link = document.createElement('a');
-            link.setAttribute('href', encodedUri);
-            link.setAttribute('download', 'VO2Smart_Data_' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.csv');
-            document.body.appendChild(link);
+            if (chart.data.labels.length > config.maxDataPoints) {
+                chart.data.labels.shift();
+                chart.data.datasets.forEach(dataset => dataset.data.shift());
+            }
             
-            // Download file
-            link.click();
-            document.body.removeChild(link);
-        });
+            chart.update();
+        }
+        
+        // Formatear tiempo
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        // Guardar peso
+        function saveWeight() {
+            const weight = parseFloat(document.getElementById('weightInput').value);
+            if (isNaN(weight) || weight < 30 || weight > 200) {
+                showError('Por favor, ingrese un peso válido entre 30 y 200 kg');
+                return;
+            }
+            localStorage.setItem('userWeight', weight);
+            showError('Peso guardado correctamente');
+        }
+        
+        // Guardar método
+        function saveMethod() {
+            const method = document.getElementById('vo2MethodSelect').value;
+            localStorage.setItem('vo2Method', method);
+            showError('Método de cálculo guardado correctamente');
+        }
+        
+        // Cargar configuración
+        function loadConfig() {
+            const savedWeight = localStorage.getItem('userWeight');
+            const savedMethod = localStorage.getItem('vo2Method');
+            
+            if (savedWeight) {
+                document.getElementById('weightInput').value = savedWeight;
+            }
+            
+            if (savedMethod) {
+                document.getElementById('vo2MethodSelect').value = savedMethod;
+            }
+        }
+        
+        // Descargar datos
+        function downloadData() {
+            const headers = ['Timestamp', 'VO2', 'RQ', 'HR', 'VE', 'Calories', 'Carb%', 'Fat%', 'Protein%'];
+            const csv = [
+                headers.join(','),
+                ...state.dataLog.map(row => [
+                    row.timestamp,
+                    row.vo2,
+                    row.rq,
+                    row.hr,
+                    row.ve,
+                    row.calories,
+                    row.substrates.carbPct,
+                    row.substrates.fatPct,
+                    row.substrates.proteinPct
+                ].join(','))
+            ].join('\n');
+            
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `vo2_data_${new Date().toISOString()}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
     </script>
 </body>
 </html>
@@ -1694,6 +2541,54 @@ void calculateFlow() {
         // Reiniciar timer para la próxima medición
         measurementTimer.reset();
     }
+}
+
+void startCalibration(float referenceValue) {
+    // Inicializar variables
+    int totalReadings = 100; // Número total de lecturas
+    float sum = 0.0;
+
+    // Pantalla inicial
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString("Iniciando Calibración", 120, 10, 2);
+
+    for (int i = 0; i < totalReadings; i++) {
+        // Leer datos del sensor (OxygenSensor como ejemplo)
+        float reading = oxygenSensor.ReadOxygenData(OXYGEN_COLLECT_NUMBER);
+        sum += reading;
+
+        // Mostrar progreso
+        tft.fillRect(10, 40, 200, 20, TFT_BLACK); // Limpiar barra de progreso
+        int progress = (i * 200) / totalReadings; // Escala para la barra
+        tft.fillRect(10, 40, progress, 20, TFT_GREEN);
+        tft.drawRect(10, 40, 200, 20, TFT_WHITE);
+
+        // Mostrar número de lecturas realizadas
+        char progressText[30];
+        sprintf(progressText, "Lectura %d/%d", i + 1, totalReadings);
+        tft.drawCentreString(progressText, 120, 70, 2);
+
+        delay(100); // Pequeña espera entre lecturas
+    }
+
+    // Calcular el factor de calibración
+    float average = sum / totalReadings;
+    float calibrationFactor = referenceValue / average;
+
+    // Guardar el factor en la configuración
+    settings.flowCalibFactor = calibrationFactor;
+    ConfigurationManager::save(settings);
+
+    // Mostrar el resultado
+    tft.fillScreen(TFT_BLACK);
+    tft.drawCentreString("Calibración Completa", 120, 10, 2);
+    char resultText[50];
+    sprintf(resultText, "Factor: %.4f", calibrationFactor);
+    tft.drawCentreString(resultText, 120, 40, 2);
+
+    delay(2000); // Pausa para que el usuario vea el resultado
+    tft.fillScreen(TFT_BLACK); // Limpiar pantalla
 }
 
 void calculateRespiratory() {

@@ -1,0 +1,2210 @@
+// VO2Smart // Claudio Abarca // Patente 2024024875
+// Proyecto VO2Max ESP32 Integrado - Versión Optimizada 3.0
+// Fecha: 2 de abril de 2025
+// Optimizado por Csav20
+//Vo2 curvo venturi redodndo
+
+// TTGO T-Display: SDA-Pin21, SCL-Pin22
+//+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+//Dimensiones de la Screen de la TTGO T DISPLAY 240X135 PIXELES
+
+// Set this to the correct printed case venturi diameter
+#define DIAMETER 20
+
+#define VERBOSE // additional debug logging
+
+#include <Arduino.h>
+#include "esp_adc_cal.h" // ADC calibration data
+#include <EEPROM.h>      // include library to read and write settings from flash
+#define ADC_EN 14        // ADC_EN is the ADC detection enable port
+#define ADC_PIN 34
+int vref = 1100;
+
+#include "DFRobot_OxygenSensor.h" //Library for Oxygen sensor
+#include "SCD30.h"                //Library for CO2 sensor
+#include "Omron_D6FPH.h"          //Library for differential pressure sensor
+#include <SPI.h>
+#include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip
+#include <Wire.h>
+#include "Adafruit_BMP280.h" // Library for BMP280 ambient temp and pressure, set correct I2C address 0x76
+
+// BLE includes
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+// Forward declarations (prototipos) de funciones
+void ConvertTime(float ms);
+void drawBatteryIndicator();
+void ReadButtons();
+void showMainMenu();
+void StreamBT();
+void VolumeCalc();
+void showScreen();
+void saveSettings();
+void readCO2();
+void showParameters();
+void tftScreen1();
+void tftScreen2();
+void tftScreen3();
+void tftScreen4();
+void tftScreen5();
+void tftParameters();
+void loadSettings();
+void showSplashScreen();
+void showError(const char* message, bool critical);
+void setupBLE();
+void CheckInitialO2();
+void CheckInitialCO2();
+void fnCalO2();
+bool performSyringeCalibration();
+void GetWeightkg();
+void generateDemoData();
+void drawDemoScreen(int screenNum);
+void vo2maxCalc();
+void AirDensity();
+void BatteryBT();
+void ExcelStream();
+void readVoltage();
+bool checkCalibrationConditions();
+bool checkEnvironmentalStability();
+void showCalibrationResult(bool passed, float error);
+void drawSyringeCalibrationScreen(float volInyectado, float progress);
+void logCalibration(float measuredVolume, float targetVolume);
+void ReadO2();
+void showCalibrationMenu(); // Add forward declaration for showCalibrationMenu
+void showCarouselMenu(); // Forward declaration for showCarouselMenu
+void manualCalibrateWithSyringe(); // Forward declaration for manualCalibrateWithSyringe
+void autoCalibrate(); // Forward declaration for autoCalibrate
+bool validateReadings(); // Forward declaration for validateReadings
+void checkAdvertising(); // Forward declaration for checkAdvertising
+void handleBLEConnection(); // Forward declaration for handleBLEConnection
+void showBLEStatus(); // Forward declaration for showBLEStatus
+void runVO2Mode(); // Forward declaration for runVO2Mode
+void loop();
+void setup();
+
+// Clases para filtros
+class FiltroKalman {
+public:
+    FiltroKalman(float _q = 0.1, float _r = 0.1) : q(_q), r(_r), x(0), p(1) {}
+
+    float filtrar(float medida) {
+        // Predicción
+        float p_temp = p + q;
+
+        // Actualización
+        float k = p_temp / (p_temp + r);
+        x = x + k * (medida - x);
+        p = (1 - k) * p_temp;
+
+        return x;
+    }
+
+private:
+    float q; // Ruido del proceso
+    float r; // Ruido de la medición
+    float x; // Valor estimado
+    float p; // Covarianza de la estimación
+};
+
+class FiltroKalmanGauss {
+public:
+    FiltroKalmanGauss(float _valorInicial = 0, float _q = 0.1) 
+        : valorEstimado(_valorInicial), p(1), q(_q), r(0.1) {}
+    
+    float filtrar(float medida) {
+        // Predicción
+        float p_temp = p + q;
+        
+        // Actualización
+        float k = p_temp / (p_temp + r);
+        valorEstimado = valorEstimado + k * (medida - valorEstimado);
+        p = (1 - k) * p_temp;
+        
+        return valorEstimado;
+    }
+
+private:
+    float valorEstimado;
+    float p;
+    float q;
+    float r;
+};
+
+class KalmanFilter {
+public:
+    KalmanFilter(float q = 0.01, float r = 0.1, float initial = 0.0)
+        : q(q), r(r), x(initial), p(1.0) {}
+    float filtrar(float measurement) {
+        float p_temp = p + q;
+        float k = p_temp / (p_temp + r);
+        x += k * (measurement - x);
+        p = (1 - k) * p_temp;
+        return x;
+    }
+private:
+    float q, r, x, p;
+};
+
+class MaxwellBoltzmannFilter {
+public:
+    MaxwellBoltzmannFilter(float _alpha = 0.1) : alpha(_alpha), lastValue(0) {}
+    
+    float filtrar(float value) {
+        lastValue = lastValue * (1 - alpha) + value * alpha;
+        return lastValue;
+    }
+
+private:
+    float alpha;
+    float lastValue;
+};
+
+class FiltroKalmanCuantico {
+public:
+    FiltroKalmanCuantico(float _q = 0.01, float _r = 0.1) 
+        : q(_q), r(_r), x(0), p(1) {}
+    
+    float filtrar(float medida) {
+        // Predicción
+        float p_temp = p + q;
+        
+        // Actualización con término no lineal (simulando efecto cuántico)
+        float k = p_temp / (p_temp + r);
+        x = x + k * (medida - x) + k * 0.01 * sin(medida * 0.1);
+        p = (1 - k) * p_temp;
+        
+        return x;
+    }
+
+private:
+    float q; // Varianza del proceso
+    float r; // Varianza de la medición
+    float x; // Valor estimado
+    float p; // Covarianza de la estimación
+};
+
+// Instancias de filtros
+FiltroKalman filtroPresion(0.5, 0.1);           // Para filtrar presión
+FiltroKalmanGauss filtroO2(20.93, 0.5);         // Para filtrar O2
+KalmanFilter filtroCO2(0.01, 0.1, 400.0);       // Para filtrar CO2
+MaxwellBoltzmannFilter filtroGasResp;           // Para filtrar gases respiratorios
+FiltroKalman filtroVolumen(1.0, 0.2);           // Para filtrar volumen
+FiltroKalman filtroVO2(0.04, 0.9);              // Para filtrar VO2
+
+// Fix TOUCH_CS warning
+#define TOUCH_CS -1 // Disable touch functionality if not used
+
+#include <TFT_eSPI.h>
+
+// declarations for bluetooth serial --------------
+// Reemplazar la implementación Bluetooth Serial antigua con BLE
+// declarations for bluetooth serial --------------
+#include "BluetoothSerial.h"
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
+BluetoothSerial SerialBT;
+
+// Definir UUIDs para servicios y características BLE - estos deben coincidir con los esperados por la web
+#define SERVICE_UUID           "0000ffe0-0000-1000-8000-00805f9b34fb"
+#define CHARACTERISTIC_UUID    "0000ffe1-0000-1000-8000-00805f9b34fb"
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pCharacteristic = NULL;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+std::string btBuffer = "";
+
+// Callbacks para manejar conexiones BLE
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      deviceConnected = true;
+      Serial.println("Cliente BLE conectado!");
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      deviceConnected = false;
+      Serial.println("Cliente BLE desconectado!");
+      // Reiniciar advertising cuando se desconecta el cliente
+      pServer->getAdvertising()->start();
+    }
+}; // Add the missing semicolon here
+
+const char* Version = "V02Smart 2025 Curvo";
+
+byte bpm;
+
+bool _BLEClientConnected = false;
+
+// ------------------------------------------
+
+
+#include <Adafruit_BMP280.h> //Library for barometric sensor
+Adafruit_BMP280 bmp;
+
+// Starts Screen for TTGO device
+TFT_eSPI tft = TFT_eSPI(); // Invoke library, pins defined in User_Setup.h
+
+// Labels the pressure sensor: mySensor
+Omron_D6FPH mySensor;
+
+// Label of oxygen sensor
+DFRobot_OxygenSensor Oxygen;
+#define COLLECT_NUMBER 10           // collect number, the collection range is 1-100.
+#define Oxygen_IICAddress ADDRESS_3 // I2C  label for o2 address
+
+// Defines button state for adding wt
+const int buttonPin1 = 0;
+const int buttonPin2 = 35;
+int wtTotal = 0;
+int buttonPushCounter1 = 0; // counter for the duration of button1 pressed
+int buttonState1 = 1;       // current state of the button
+int buttonPushCounter2 = 0; // counter for the duration of button2 pressed
+int buttonState2 = 1;       // current state of the button
+int screenChanged = 0;
+int screenNr = 1;
+int HeaderStreamed = 0;
+int HeaderStreamedBT = 0;
+int DEMO = 0; // 1 = DEMO-mode
+
+// ############################################
+//  Select correct diameter depending on printed
+//  case dimensions:
+// ############################################
+
+// Verificar y ajustar las áreas del Venturi
+float area_1 = 0.000531; // Área de 26mm de diámetro
+#if (DIAMETER == 20)
+float area_2 = 0.000314; // Área de 20mm de diámetro
+#elif (DIAMETER == 19)
+float area_2 = 0.000284; // Área de 19mm de diámetro
+#else
+float area_2 = 0.000201; // Área de 16mm de diámetro
+#endif
+
+// Verificar densidades del aire
+float rho = 1.225;     // Densidad en condiciones ATP (aire seco)
+float rhoSTPD = 1.292; // Densidad en condiciones STPD
+float rhoBTPS = 1.123; // Densidad en condiciones BTPS
+
+float massFlow = 0;
+float volFlow = 0;
+float volumeTotal = 0;      // variable for holding total volume of breath
+float pressure = 0.0;       // differential pressure of the venturi nozzle
+float pressThreshold = 0.2; // threshold for starting calculation of VE
+float volumeVE = 0.0;
+float volumeVEmean = 0.0;
+float volumeExp = 0.0;
+
+// ######## Edit correction factor based on flow measurment with calibration syringe ############
+
+// float correctionSensor = 1.0;   // correction factor
+
+// ##############################################################################################
+
+// Basic defaults in settings, saved to eeprom
+struct
+{
+    int version = 1;              // Make sure saved data is right version
+    float correctionSensor = 1.0; // calculated from 3L calibration syringe
+    float weightkg = 75.0;        // Standard-body-weight
+    bool co2_on = false;          // CO2 sensor active
+} settings;
+
+float TimerVolCalc = 0.0;
+float Timer5s = 0.0;
+float Timer1min = 0.0;
+float TimerVO2calc = 0.0;
+float TimerVO2diff = 0.0; // used for integral of calories
+float TimerStart = 0.0;
+float TotalTime = 0.0;
+String TotalTimeMin = String("00:00");
+int readVE = 0;
+float TimerVE = 0.0;
+float DurationVE = 0.0;
+
+float lastO2 = 0;
+float initialO2 = 0;
+float co2 = 0;
+float calTotal = 0;
+float vo2Cal = 0;
+float vo2CalH = 0;        // calories per hour
+float vo2CalDay = 0.0;    // calories per day
+float vo2CalDayMax = 0.0; // highest value of calories per day
+float vo2Max = 0;         // value of vo2Max/min/kg, calculated every 30 seconds
+float vo2Total = 0.0;     // value of total vo2Max/min
+float vo2MaxMax = 0;      // Best value of vo2 max for whole time machine is on
+
+float respq = 0.0;      // respiratory quotient in mol VCO2 / mol VO2
+float co2ppm = 0.0;     // CO2 sensor in ppm
+float co2perc = 0.0;    // = CO2ppm /10000
+float initialCO2 = 0.0; // initial value of CO2 in ppm
+float vco2Total = 0.0;
+float vco2Max = 0.0;
+float co2temp = 0.0; // temperature CO2 sensor
+float co2hum = 0.0;  // humidity CO2 sensor (not used in calculations)
+
+float freqVE = 0.0;     // ventilation frequency
+float freqVEmean = 0.0; // mean ventilation frequency
+
+float expiratVol = 0.0; // last expiratory volume in L
+float volumeTotalOld = 0.0;
+float volumeTotal2 = 0.0;
+float TempC = 15.0;    // Air temperature in Celsius barometric sensor BMP180
+float PresPa = 101325; // uncorrected (absolute) barometric pressure
+
+float Battery_Voltage = 0.0;
+
+// Constantes para calibración con jeringa
+#define SYRINGE_VOLUME 3000.0      // Volumen de la jeringa en mL
+#define CALIB_TIMEOUT_MS 60000     // Tiempo máximo para la calibración (1 minuto)
+#define CALIB_UPDATE_INTERVAL_MS 100 // Intervalo de actualización (100 ms)
+#define CALIB_ALLOWED_ERROR 3.0    // Error permitido (3%)
+
+// Demo mode variables
+#define DEMO_SCREEN_DURATION 10000  // 10 segundos por pantalla
+#define DEMO_UPDATE_INTERVAL 300    // Actualización cada 300ms
+
+struct {
+    uint8_t currentScreen;
+    float batteryVoltage;
+    float vo2;
+    float vco2;
+    float rq;
+    float ve;
+    float freq;
+    unsigned long lastScreenChange;
+    unsigned long lastBatteryUpdate;
+    unsigned long lastDataUpdate;
+    unsigned long lastDisplayUpdate;    
+    bool needsDisplayUpdate;
+    // Nuevas variables para demo mejorado
+    uint8_t testPhase;         // 0=reposo, 1=calentamiento, 2=incremental, 3=máximo, 4=recuperación
+    float testTime;            // Tiempo transcurrido en minutos
+    float testDuration;        // Duración total planeada en minutos
+    float workload;            // Carga de trabajo en watts
+    float hr;                  // Frecuencia cardíaca
+    float hrMax;               // FC máxima alcanzada
+    float vo2Max;              // VO2 máximo alcanzado
+    float vo2Percent;          // Porcentaje del VO2max teórico
+    bool showGrid;             // Mostrar cuadrícula en gráficos
+    float dataHistory[120][4]; // Almacenar historia: [tiempo][vo2,hr,ve,rq]
+    int dataPoints;            // Número de puntos de datos almacenados
+    int protocolType;          // 0=Rampa, 1=Escalón, 2=Bruce
+    bool isPaused;             // Para pausar la simulación
+    float weight;              // Peso del sujeto simulado en kg
+    float height;              // Altura del sujeto simulado en cm
+    uint8_t age;               // Edad del sujeto simulado
+    uint8_t gender;            // 0=masculino, 1=femenino
+    float mets;                // Equivalentes metabólicos
+} demo;
+
+// Constantes para el modo demo basadas en literatura científica
+#define DEMO_REST_VO2          3.5     // ml/kg/min en reposo (1 MET)
+#define DEMO_WARMUP_VO2        15.0    // ml/kg/min en calentamiento
+#define DEMO_VO2_INCREMENT     3.0     // Incremento ml/kg/min por min en fase incremental
+#define DEMO_MAX_VO2_MALE      42.0    // VO2max promedio para hombre sedentario 35-40 años
+#define DEMO_MAX_VO2_FEMALE    35.0    // VO2max promedio para mujer sedentaria 35-40 años
+#define DEMO_MAX_HR_FORMULA    220     // Base para fórmula FC máx = 220-edad
+#define DEMO_REST_HR           70      // FC en reposo promedio
+#define DEMO_RQ_REST           0.82    // RQ en reposo
+#define DEMO_RQ_MAX            1.15    // RQ máximo al final del test
+#define DEMO_VE_REST           8.0     // Ventilación en reposo (L/min)
+#define DEMO_BREATH_REST       12      // Respiraciones por minuto en reposo
+#define DEMO_BREATH_MAX        50      // Respiraciones por minuto máximas
+
+// Enumeración para fases del test
+enum TestPhases {
+    PHASE_REST = 0,
+    PHASE_WARMUP = 1,
+    PHASE_INCREMENTAL = 2,
+    PHASE_MAX = 3,
+    PHASE_RECOVERY = 4
+};
+
+// Enumeración para protocolos
+enum TestProtocols {
+    PROTOCOL_RAMP = 0,
+    PROTOCOL_STEP = 1,
+    PROTOCOL_BRUCE = 2
+};
+
+// Colores adicionales para mejorar la interfaz (coherentes con TFT_eSPI)
+#define TFT_NAVY        0x000F      // Azul marino
+#define TFT_DARKGREEN   0x03E0      // Verde oscuro
+#define TFT_DARKCYAN    0x03EF      // Cian oscuro
+#define TFT_MAROON      0x7800      // Marrón
+#define TFT_PURPLE      0x780F      // Púrpura
+#define TFT_OLIVE       0x7BE0      // Oliva
+#define TFT_LIGHTGREY   0xD69A      // Usar el valor de TFT_eSPI.h
+#define TFT_DARKGREY    0x7BEF      // Gris oscuro
+#define TFT_ORANGE      0xFDA0      // Usar el valor de TFT_eSPI.h
+#define TFT_PINK        0xFE19      // Rosa
+
+// Implementación mejorada de generateDemoData()
+void generateDemoData() {
+    // Actualizar el tiempo de test
+    static unsigned long lastUpdate = millis();
+    unsigned long now = millis();
+    float deltaTime = (now - lastUpdate) / 1000.0 / 60.0; // Convertir a minutos
+    
+    // Avanzar tiempo solo si no está pausado
+    if (!demo.isPaused) {
+        demo.testTime += deltaTime;
+    }
+    lastUpdate = now;
+    
+    // Determinar la fase actual del test basándose en el tiempo transcurrido
+    if (demo.testTime < 2.0) {
+        // Fase de reposo (2 minutos)
+        demo.testPhase = PHASE_REST;
+    } else if (demo.testTime < 4.0) {
+        // Fase de calentamiento (2 minutos)
+        demo.testPhase = PHASE_WARMUP;
+    } else if (demo.testTime < 14.0) {
+        // Fase incremental (10 minutos)
+        demo.testPhase = PHASE_INCREMENTAL;
+    } else if (demo.testTime < 15.0) {
+        // Fase VO2max (1 minuto)
+        demo.testPhase = PHASE_MAX;
+    } else {
+        // Fase de recuperación
+        demo.testPhase = PHASE_RECOVERY;
+    }
+    
+    // Valores objetivo según la fase (basados en literatura científica)
+    float targetVO2 = 0.0;
+    float targetHR = 0.0;
+    float targetRQ = 0.0;
+    float targetVE = 0.0;
+    float targetFreq = 0.0;
+    float maxPredictedVO2 = (demo.gender == 0) ? DEMO_MAX_VO2_MALE : DEMO_MAX_VO2_FEMALE;
+    float maxPredictedHR = DEMO_MAX_HR_FORMULA - demo.age;
+    
+    // Calcular valores objetivo según la fase del test
+    switch(demo.testPhase) {
+        case PHASE_REST:
+            targetVO2 = DEMO_REST_VO2;
+            targetHR = DEMO_REST_HR;
+            targetRQ = DEMO_RQ_REST;
+            targetVE = DEMO_VE_REST;
+            targetFreq = DEMO_BREATH_REST;
+            demo.workload = 0;
+            break;
+            
+        case PHASE_WARMUP:
+            targetVO2 = DEMO_WARMUP_VO2;
+            targetHR = DEMO_REST_HR + (maxPredictedHR - DEMO_REST_HR) * 0.3;
+            targetRQ = DEMO_RQ_REST + 0.05;
+            targetVE = DEMO_VE_REST * 2;
+            targetFreq = DEMO_BREATH_REST * 1.3;
+            demo.workload = 50;
+            break;
+            
+        case PHASE_INCREMENTAL:
+            // Incremento lineal durante la fase incremental
+            {
+                float incrementalProgress = (demo.testTime - 4.0) / 10.0; // 0 a 1 durante los 10 min
+                targetVO2 = DEMO_WARMUP_VO2 + (maxPredictedVO2 - DEMO_WARMUP_VO2) * incrementalProgress;
+                targetHR = DEMO_REST_HR + (maxPredictedHR - DEMO_REST_HR) * (0.3 + 0.65 * incrementalProgress);
+                targetRQ = DEMO_RQ_REST + 0.05 + (DEMO_RQ_MAX - DEMO_RQ_REST - 0.05) * incrementalProgress;
+                targetVE = DEMO_VE_REST * (2 + 10 * incrementalProgress);
+                targetFreq = DEMO_BREATH_REST * (1.3 + 2.7 * incrementalProgress);
+                
+                // Calcular carga de trabajo según protocolo
+                if (demo.protocolType == PROTOCOL_RAMP) {
+                    // Incremento continuo
+                    demo.workload = 50 + 150 * incrementalProgress;
+                } else if (demo.protocolType == PROTOCOL_STEP) {
+                    // Incremento en bloques de 2 minutos
+                    int stepNumber = (int)((demo.testTime - 4.0) / 2.0);
+                    demo.workload = 50 + stepNumber * 30;
+                } else if (demo.protocolType == PROTOCOL_BRUCE) {
+                    // Protocolo de Bruce (aproximación)
+                    int stageNumber = (int)((demo.testTime - 4.0) / 3.0);
+                    float speeds[5] = {1.7, 2.5, 3.4, 4.2, 5.0}; // mph
+                    float grades[5] = {10, 12, 14, 16, 18}; // %
+                    float speed = (stageNumber < 5) ? speeds[stageNumber] : 5.0;
+                    float grade = (stageNumber < 5) ? grades[stageNumber] : 18.0;
+                    // Convertir a watts (aproximación)
+                    demo.workload = 50 + 50 * stageNumber;
+                }
+            }
+            break;
+            
+        case PHASE_MAX:
+            // Meseta del VO2
+            targetVO2 = maxPredictedVO2;
+            targetHR = maxPredictedHR;
+            targetRQ = DEMO_RQ_MAX;
+            targetVE = DEMO_VE_REST * 12;
+            targetFreq = DEMO_BREATH_MAX;
+            demo.workload = 200;
+            
+            // Guardar máximos
+            if (targetVO2 > demo.vo2Max) demo.vo2Max = targetVO2;
+            if (targetHR > demo.hrMax) demo.hrMax = targetHR;
+            break;
+            
+        case PHASE_RECOVERY:
+            // Descenso exponencial en la recuperación
+            {
+                float recoveryTime = demo.testTime - 15.0; // Tiempo en recuperación
+                float recoveryFactor = exp(-recoveryTime / 2.0); // Decaimiento exponencial
+                
+                targetVO2 = DEMO_REST_VO2 + (maxPredictedVO2 - DEMO_REST_VO2) * recoveryFactor * 0.6;
+                targetHR = DEMO_REST_HR + (maxPredictedHR - DEMO_REST_HR) * recoveryFactor * 0.7;
+                targetRQ = DEMO_RQ_REST + (DEMO_RQ_MAX - DEMO_RQ_REST) * recoveryFactor * 0.8;
+                targetVE = DEMO_VE_REST * (1 + 11 * recoveryFactor * 0.7);
+                targetFreq = DEMO_BREATH_REST * (1 + 3 * recoveryFactor * 0.8);
+                demo.workload = 50 * recoveryFactor;
+            }
+            break;
+    }
+    
+    // Añadir oscilaciones fisiológicas realistas (variabilidad)
+    static float oscillationPhase = 0;
+    oscillationPhase += deltaTime * 10; // Velocidad de oscilación
+    
+    float breathOscillation = sin(oscillationPhase * 3) * 0.05; // Oscilación respiratoria
+    float hrOscillation = sin(oscillationPhase) * 0.02; // Oscilación cardíaca
+    
+    // Aplicar valores finales con suavizado y oscilaciones
+    float smoothingFactor = 0.1; // Factor de suavizado (0-1)
+    
+    demo.vo2 = demo.vo2 * (1-smoothingFactor) + (targetVO2 * (1.0 + breathOscillation)) * smoothingFactor;
+    demo.hr = demo.hr * (1-smoothingFactor) + (targetHR * (1.0 + hrOscillation)) * smoothingFactor;
+    demo.rq = demo.rq * (1-smoothingFactor) + (targetRQ * (1.0 + breathOscillation * 0.2)) * smoothingFactor;
+    demo.ve = demo.ve * (1-smoothingFactor) + (targetVE * (1.0 + breathOscillation * 2)) * smoothingFactor;
+    demo.freq = demo.freq * (1-smoothingFactor) + (targetFreq * (1.0 + breathOscillation)) * smoothingFactor;
+    
+    // Calcular VCO2 a partir de VO2 y RQ
+    demo.vco2 = demo.vo2 * demo.rq;
+    
+    // Actualizar porcentaje del VO2max teórico
+    demo.vo2Percent = (demo.vo2 / maxPredictedVO2) * 100.0;
+    
+    // Actualizar MET (1 MET = 3.5 ml/kg/min)
+    demo.mets = demo.vo2 / 3.5;
+    
+    // Almacenar datos históricos (cada 15 segundos)
+    if (now - demo.lastDataUpdate >= 15000 && demo.dataPoints < 120) {
+        demo.dataHistory[demo.dataPoints][0] = demo.vo2;
+        demo.dataHistory[demo.dataPoints][1] = demo.hr;
+        demo.dataHistory[demo.dataPoints][2] = demo.ve;
+        demo.dataHistory[demo.dataPoints][3] = demo.rq;
+        demo.dataPoints++;
+        demo.lastDataUpdate = now;
+    }
+    
+    // Actualizar valores usados en el flujo principal para pantallas
+    vo2Max = filtroVO2.filtrar(volumeVEmean * (lastO2 - initialO2) * 10); // Ejemplo simplificado
+    vco2Max = volumeVEmean * co2perc; // Cálculo directo
+    volumeVEmean = demo.ve;
+    freqVEmean = demo.freq;
+    respq = demo.rq;
+    
+    // Simular volumen respiratorio (basado en VE y frecuencia)
+    volumeExp = demo.ve / demo.freq;
+    
+    // Simular la batería con un patrón realista
+    static float batteryDirection = -0.0001;
+    demo.batteryVoltage += batteryDirection;
+    if (demo.batteryVoltage < 3.5) {
+        batteryDirection = 0.0001;
+    } else if (demo.batteryVoltage > 4.1) {
+        batteryDirection = -0.0001;
+    }
+    
+    // Actualizar variable global para integración con otras partes del código
+    Battery_Voltage = demo.batteryVoltage;
+    
+    // Actualizar tiempo total para integración con otras partes del código
+    TotalTime = demo.testTime * 60000; // Convertir a milisegundos
+    ConvertTime(TotalTime); // Actualizar cadena de tiempo formateada
+}
+
+// Limpieza y unificación de la función drawDemoScreen, asegurando cierre correcto y sin duplicados
+void drawDemoScreen(int screenNum) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    // Mostrar la fase actual del test en la parte superior
+    const char* phaseText = "";
+    switch (demo.testPhase) {
+        case PHASE_REST: phaseText = "Reposo"; break;
+        case PHASE_WARMUP: phaseText = "Calentamiento"; break;
+        case PHASE_INCREMENTAL: phaseText = "Incremental"; break;
+        case PHASE_MAX: phaseText = "Maximo"; break;
+        case PHASE_RECOVERY: phaseText = "Recuperacion"; break;
+    }
+    tft.drawString(phaseText, 5, 3, 2);
+    tft.setTextColor(TFT_WHITE, TFT_NAVY);
+    int mins = int(demo.testTime);
+    int secs = int((demo.testTime - mins) * 60);
+    char timeStr[8];
+    sprintf(timeStr, "%02d:%02d", mins, secs);
+    tft.drawRightString(timeStr, 235, 3, 2);
+
+    switch (screenNum) {
+        case 1: {
+            // Pantalla 1: VO2, FC, RQ, barra de intensidad
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.drawString("VO2 (ml/kg/min):", 10, 50, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+            tft.drawFloat(demo.vo2, 1, 170, 50, 2);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.drawString("FC (lpm):", 10, 75, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+            tft.drawFloat(demo.hr, 0, 170, 75, 2);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.drawString("RQ:", 10, 100, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+            tft.drawFloat(demo.rq, 2, 170, 100, 2);
+            int intensity = int(demo.vo2Percent);
+            intensity = constrain(intensity, 0, 100);
+            tft.fillRect(20, 150, 200, 15, TFT_DARKGREY);
+            uint16_t barColor;
+            if (intensity < 50) barColor = TFT_GREEN;
+            else if (intensity < 75) barColor = TFT_YELLOW;
+            else if (intensity < 90) barColor = TFT_ORANGE;
+            else barColor = TFT_RED;
+            tft.fillRect(20, 150, intensity * 2, 15, barColor);
+            tft.setTextColor(TFT_BLACK, barColor);
+            if (intensity > 10) {
+                tft.drawNumber(intensity, 25, 150, 2);
+                tft.drawString("%", 45, 150, 2);
+            }
+            break;
+        }
+        case 2: {
+            // Pantalla 2: Ventilación y frecuencia respiratoria
+            tft.setTextColor(TFT_CYAN, TFT_BLACK);
+            tft.drawCentreString("VENTILACION", 120, 5, 2);
+            tft.fillRoundRect(10, 25, 110, 50, 5, TFT_DARKGREEN);
+            tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+            tft.drawString("VE", 15, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_DARKGREEN);
+            tft.drawFloat(demo.ve, 1, 20, 50, 4);
+            tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+            tft.drawString("L/min", 15, 75, 1);
+            tft.fillRoundRect(130, 25, 110, 50, 5, TFT_DARKCYAN);
+            tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+            tft.drawString("FREC", 135, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_DARKCYAN);
+            tft.drawFloat(demo.freq, 1, 140, 50, 4);
+            tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+            tft.drawString("resp/min", 135, 75, 1);
+            // Gráfico de ventilación
+            tft.fillRect(10, 90, 220, 40, TFT_NAVY);
+            tft.drawRect(10, 90, 220, 40, TFT_WHITE);
+            if (demo.dataPoints > 0) {
+                float maxVE = 0;
+                for (int i = 0; i < demo.dataPoints; i++) {
+                    if (demo.dataHistory[i][2] > maxVE) maxVE = demo.dataHistory[i][2];
+                }
+                if (maxVE < 30) maxVE = 30;
+                int startIdx = max(0, demo.dataPoints - 20);
+                for (int i = startIdx; i < demo.dataPoints - 1; i++) {
+                    int x1 = map(i - startIdx, 0, 19, 15, 225);
+                    int y1 = map(demo.dataHistory[i][2], 0, maxVE, 125, 95);
+                    int x2 = map(i + 1 - startIdx, 0, 19, 15, 225);
+                    int y2 = map(demo.dataHistory[i + 1][2], 0, maxVE, 125, 95);
+                    tft.drawLine(x1, y1, x2, y2, TFT_GREEN);
+                }
+            }
+            break;
+        }
+        case 3: {
+            // Pantalla 3: Consumo energético
+            tft.setTextColor(TFT_CYAN, TFT_BLACK);
+            tft.drawCentreString("CONSUMO ENERGETICO", 120, 25, 2);
+            tft.fillRoundRect(5, 40, 110, 55, 5, TFT_RED);
+            tft.setTextColor(TFT_WHITE, TFT_RED);
+            tft.drawString("VO2MAX", 12, 43, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_RED);
+            tft.drawFloat(demo.vo2Max, 1, 20, 60, 4);
+            tft.setTextColor(TFT_WHITE, TFT_RED);
+            tft.drawString("ml/kg/min", 15, 85, 1);
+            tft.fillRoundRect(125, 40, 110, 55, 5, TFT_OLIVE);
+            tft.setTextColor(TFT_WHITE, TFT_OLIVE);
+            tft.drawString("METS", 132, 43, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_OLIVE);
+            tft.drawFloat(demo.mets, 1, 140, 60, 4);
+            tft.fillRoundRect(5, 100, 110, 45, 5, TFT_MAROON);
+            tft.setTextColor(TFT_WHITE, TFT_MAROON);
+            tft.drawString("VCO2", 12, 103, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_MAROON);
+            tft.drawFloat(demo.vco2, 1, 20, 118, 4);
+            float calories = demo.vo2 * demo.weight * 0.005;
+            tft.fillRoundRect(125, 100, 110, 45, 5, TFT_ORANGE);
+            tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+            tft.drawString("KCAL/MIN", 132, 103, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_ORANGE);
+            tft.drawFloat(calories, 1, 140, 118, 4);
+            char subjectInfo[30];
+            sprintf(subjectInfo, "%s, %da, %dcm, %dkg", demo.gender == 0 ? "Hombre" : "Mujer", demo.age, (int)demo.height, (int)demo.weight);
+            tft.fillRect(0, 150, 240, 20, TFT_NAVY);
+            tft.setTextColor(TFT_WHITE, TFT_NAVY);
+            tft.drawCentreString(subjectInfo, 120, 153, 2);
+            break;
+        }
+        case 4: {
+            // Pantalla 4: VE y FREC
+            tft.setTextColor(TFT_CYAN, TFT_BLACK);
+            tft.drawCentreString("VE y FREC", 120, 5, 2);
+            tft.fillRoundRect(10, 25, 110, 50, 5, TFT_DARKGREEN);
+            tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+            tft.drawString("VE", 15, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_DARKGREEN);
+            tft.drawFloat(demo.ve, 1, 20, 50, 4);
+            tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+            tft.drawString("L/min", 15, 75, 1);
+            tft.fillRoundRect(130, 25, 110, 50, 5, TFT_DARKCYAN);
+            tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+            tft.drawString("FREC", 135, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_DARKCYAN);
+            tft.drawFloat(demo.freq, 1, 140, 50, 4);
+            tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+            tft.drawString("resp/min", 135, 75, 1);
+            break;
+        }
+        case 5: {
+            // Pantalla 5: VO2 y CARGA
+            tft.setTextColor(TFT_CYAN, TFT_BLACK);
+            tft.drawCentreString("VO2 y CARGA", 120, 5, 2);
+            tft.fillRoundRect(10, 25, 110, 50, 5, TFT_DARKCYAN);
+            tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+            tft.drawString("VO2", 15, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_DARKCYAN);
+            tft.drawFloat(demo.vo2, 1, 20, 50, 4);
+            tft.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+            tft.drawString("ml/kg/min", 15, 75, 1);
+            tft.fillRoundRect(130, 25, 110, 50, 5, TFT_GREEN);
+            tft.setTextColor(TFT_WHITE, TFT_GREEN);
+            tft.drawString("CARGA", 135, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_GREEN);
+            tft.drawNumber(int(demo.workload), 140, 50, 4);
+            break;
+        }
+        case 6: {
+            // Pantalla 6: VCO2 y KCAL/MIN
+            tft.setTextColor(TFT_CYAN, TFT_BLACK);
+            tft.drawCentreString("VCO2 y KCAL/MIN", 120, 5, 2);
+            tft.fillRoundRect(10, 25, 110, 50, 5, TFT_MAROON);
+            tft.setTextColor(TFT_WHITE, TFT_MAROON);
+            tft.drawString("VCO2", 15, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_MAROON);
+            tft.drawFloat(demo.vco2, 1, 20, 50, 4);
+            float calories = demo.vo2 * demo.weight * 0.005;
+            tft.fillRoundRect(130, 25, 110, 50, 5, TFT_ORANGE);
+            tft.setTextColor(TFT_WHITE, TFT_ORANGE);
+            tft.drawString("KCAL/MIN", 135, 30, 2);
+            tft.setTextColor(TFT_YELLOW, TFT_ORANGE);
+            tft.drawFloat(calories, 1, 140, 50, 4);
+            break;
+        }
+        default: {
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.drawCentreString("Pantalla no implementada", 120, 60, 2);
+            break;
+        }
+    }
+    tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    tft.drawString("Bot1: Siguiente", 2, 175, 1);
+    tft.drawString("Bot2: Pausa", 120, 175, 1);
+    drawBatteryIndicator();
+}
+
+//----------------------------------------------------------------------------------------------------------
+//                  MAIN PROGRAM
+//----------------------------------------------------------------------------------------------------------
+
+// Function to display the main menu
+// Removed duplicate definition of showMainMenu()
+
+// Modificar la parte de setup() que inicializa el modo DEMO
+void setup() {
+    Serial.begin(115200);
+    pinMode(buttonPin1, INPUT_PULLUP);
+    pinMode(buttonPin2, INPUT_PULLUP);
+    tft.init();
+    tft.setRotation(1);
+    showSplashScreen();
+    showCarouselMenu(); // Solo aquí, no en loop()
+}
+
+void loop() {
+    ReadButtons();
+    // Permitir volver al menú si ambos botones se mantienen presionados 2 segundos
+    static unsigned long menuPressStart = 0;
+    if (digitalRead(buttonPin1) == LOW && digitalRead(buttonPin2) == LOW) {
+        if (menuPressStart == 0) menuPressStart = millis();
+        if (millis() - menuPressStart > 2000) {
+            showCarouselMenu();
+            menuPressStart = 0;
+            return;
+        }
+    } else {
+        menuPressStart = 0;
+    }
+    if (DEMO) {
+        generateDemoData();
+        drawDemoScreen(demo.currentScreen);
+        // Puedes agregar navegación entre pantallas demo aquí si lo deseas
+    } else {
+        showScreen();
+        // Puedes agregar navegación entre pantallas VO2 aquí si lo deseas
+    }
+    delay(10); // Pequeño delay para estabilidad
+}
+
+// --- MENÚ PRINCIPAL ---
+void showMainMenu() {
+    enum MenuOptions {
+        OPTION_VO2_MODE = 0,
+        OPTION_DEMO_MODE,
+        OPTION_CALIBRATION,
+        OPTION_SETTINGS,
+        OPTION_COUNT
+    };
+
+    const char* menuOptions[] = {
+        "Modo VO2",
+        "Modo Demo",
+        "Calibracion",
+        "Configuracion"
+    };
+
+    int selectedOption = 0;
+    bool menuActive = true;
+
+    while (menuActive) {
+        // Dibujar el menú
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_CYAN, TFT_BLACK);
+        tft.drawCentreString("VO2Smart Menu", 120, 10, 4);
+        for (int i = 0; i < OPTION_COUNT; i++) {
+            int y = 50 + i * 35;
+            if (i == selectedOption) {
+                tft.fillRoundRect(20, y, 200, 30, 5, TFT_DARKGREY);
+                tft.setTextColor(TFT_YELLOW, TFT_DARKGREY);
+            } else {
+                tft.fillRoundRect(20, y, 200, 30, 5, TFT_NAVY);
+                tft.setTextColor(TFT_WHITE, TFT_NAVY);
+            }
+            tft.drawCentreString(menuOptions[i], 120, y + 7, 2);
+        }
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.drawString("Bot2: Navegar", 10, 190, 1);
+        tft.drawString("Bot1: Seleccionar", 120, 190, 1);
+
+        // Esperar pulsación de botón
+        bool waiting = true;
+        while (waiting) {
+            ReadButtons();
+            if (buttonPushCounter2 == 1) { // Botón 2: Navegar
+                selectedOption = (selectedOption + 1) % 4;
+                buttonPushCounter2 = 0;
+                waiting = false;
+            }
+            if (buttonPushCounter1 == 1) { // Botón 1: Seleccionar
+                menuActive = false;
+                buttonPushCounter1 = 0;
+                waiting = false;
+            }
+            delay(80);
+        }
+    }
+
+    // Ejecutar acción según opción seleccionada
+    switch (selectedOption) {
+        case OPTION_VO2_MODE:
+            DEMO = 0;
+            screenNr = 1;
+            showScreen(); // Mostrar pantalla principal del modo VO2
+            break;
+        case OPTION_DEMO_MODE:
+            DEMO = 1;
+            demo.currentScreen = 1;
+            demo.batteryVoltage = 4.0;
+            demo.vo2 = DEMO_REST_VO2;
+            demo.vco2 = DEMO_REST_VO2 * DEMO_RQ_REST;
+            demo.rq = DEMO_RQ_REST;
+            demo.ve = DEMO_VE_REST;
+            demo.freq = DEMO_BREATH_REST;
+            demo.lastScreenChange = millis();
+            demo.lastBatteryUpdate = millis();
+            demo.lastDataUpdate = millis() - 10000;
+            demo.lastDisplayUpdate = 0;
+            demo.needsDisplayUpdate = true;
+            demo.testPhase = PHASE_REST;
+            demo.testTime = 0;
+            demo.testDuration = 20;
+            demo.workload = 0;
+            demo.hr = DEMO_REST_HR;
+            demo.hrMax = 0;
+            demo.vo2Max = 0;
+            demo.vo2Percent = 0;
+            demo.showGrid = true;
+            demo.dataPoints = 0;
+            demo.protocolType = PROTOCOL_RAMP;
+            demo.isPaused = false;
+            demo.weight = 75;
+            demo.height = 175;
+            demo.age = 35;
+            demo.gender = 0;
+            demo.mets = 1.0;
+            drawDemoScreen(demo.currentScreen); // Mostrar la primera pantalla del modo DEMO
+            break;
+        case OPTION_CALIBRATION:
+            showCalibrationMenu(); // Mostrar submenú de calibración
+            break;
+        case OPTION_SETTINGS:
+            GetWeightkg(); // Configurar peso del usuario
+            break;
+    }
+}
+
+void showCarouselMenu() {
+    enum MenuOptions {
+        OPTION_VO2_MODE = 0,
+        OPTION_DEMO_MODE,
+        OPTION_CALIBRATION,
+        OPTION_SETTINGS,
+        OPTION_COUNT
+    };
+
+    const char* menuOptions[] = {
+        "Modo VO2",
+        "Modo Demo",
+        "Calibracion",
+        "Configuracion"
+    };
+
+    const uint16_t menuColors[] = {
+        TFT_DARKCYAN,  // Color para "Modo VO2"
+        TFT_DARKGREEN, // Color para "Modo Demo"
+        TFT_ORANGE,    // Color para "Calibracion"
+        TFT_PURPLE     // Color para "Configuracion"
+    };
+
+    int selectedOption = 0;
+    bool menuActive = true;
+
+    while (menuActive) {
+        // Dibujar fondo
+        tft.fillScreen(TFT_BLACK);
+        tft.fillRect(0, 0, 240, 30, TFT_NAVY); // Barra superior
+        tft.setTextColor(TFT_WHITE, TFT_NAVY);
+        tft.drawCentreString("VO2Smart", 120, 5, 2);
+        tft.fillRoundRect(40, 40, 160, 50, 10, menuColors[selectedOption]);
+        tft.setTextColor(TFT_WHITE, menuColors[selectedOption]);
+        tft.drawCentreString(menuOptions[selectedOption], 120, 55, 2);
+        int prevOption = (selectedOption - 1 + OPTION_COUNT) % OPTION_COUNT;
+        int nextOption = (selectedOption + 1) % OPTION_COUNT;
+        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        tft.drawCentreString(menuOptions[prevOption], 40, 110, 1);
+        tft.drawCentreString(menuOptions[nextOption], 200, 110, 1);
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.drawString("Bot2: Navegar", 10, 130, 1);
+        tft.drawString("Bot1: Seleccionar", 120, 130, 1);
+        bool waiting = true;
+        while (waiting) {
+            ReadButtons();
+            if (buttonPushCounter2 == 1) { // Botón 2: Navegar
+                selectedOption = (selectedOption + 1) % OPTION_COUNT;
+                buttonPushCounter2 = 0;
+                waiting = false;
+            }
+            if (buttonPushCounter1 == 1) { // Botón 1: Seleccionar
+                menuActive = false;
+                buttonPushCounter1 = 0;
+                waiting = false;
+            }
+            delay(80);
+        }
+    }
+    // Ejecutar acción según opción seleccionada
+    switch (selectedOption) {
+        case OPTION_VO2_MODE:
+            DEMO = 0;
+            screenNr = 1;
+            runVO2Mode();
+            break;
+        case OPTION_DEMO_MODE:
+            DEMO = 1;
+            demo.currentScreen = 1;
+            drawDemoScreen(demo.currentScreen);
+            break;
+        case OPTION_CALIBRATION:
+            showCalibrationMenu();
+            break;
+        case OPTION_SETTINGS:
+            GetWeightkg();
+            break;
+    }
+}
+
+// --- MENÚ DE CALIBRACIÓN ---
+void showCalibrationMenu() {
+    const char* calibrationOptions[] = {
+        "Autocalibracion",
+        "Manual con Jeringa"
+    };
+
+    const uint16_t calibrationColors[] = {
+        TFT_BLUE,    // Color para "Autocalibracion"
+        TFT_GREEN   // Color para "Manual con Jeringa"
+    };
+
+    int selectedOption = 0;
+    bool menuActive = true;
+
+    while (menuActive) {
+        // Dibujar fondo
+        tft.fillScreen(TFT_BLACK);
+
+        // Dibujar encabezado
+        tft.fillRect(0, 0, 240, 30, TFT_NAVY); // Barra superior
+        tft.setTextColor(TFT_WHITE, TFT_NAVY);
+        tft.drawCentreString("CALIBRACION", 120, 5, 2); // Encabezado centrado
+
+        // Dibujar la opción seleccionada en el centro
+        tft.fillRoundRect(40, 40, 160, 50, 10, calibrationColors[selectedOption]); // Rectángulo central
+        tft.setTextColor(TFT_WHITE, calibrationColors[selectedOption]);
+        tft.drawCentreString(calibrationOptions[selectedOption], 120, 55, 2); // Texto centrado en el rectángulo
+
+        // Dibujar las opciones laterales (previa y siguiente)
+        int prevOption = (selectedOption - 1 + 2) % 2;
+        int nextOption = (selectedOption + 1) % 2;
+
+        tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        tft.drawCentreString(calibrationOptions[prevOption], 40, 110, 1); // Opción previa (izquierda)
+        tft.drawCentreString(calibrationOptions[nextOption], 200, 110, 1); // Opción siguiente (derecha)
+
+        // Indicaciones de navegación
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.drawString("Bot2: Navegar", 10, 130, 1);
+        tft.drawString("Bot1: Seleccionar", 120, 130, 1);
+
+        // Esperar pulsación de botón
+        bool waiting = true;
+        while (waiting) {
+            ReadButtons();
+            if (buttonPushCounter2 == 1) { // Botón 2: Navegar
+                selectedOption = (selectedOption + 1) % 2;
+                waiting = false;
+            }
+            if (buttonPushCounter1 == 1) { // Botón 1: Seleccionar
+                menuActive = false;
+                waiting = false;
+            }
+            delay(80);
+        }
+    }
+
+    // Ejecutar acción según opción seleccionada
+    switch (selectedOption) {
+        case 0:
+            autoCalibrate(); // Ejecutar calibración automática
+            break;
+        case 1:
+            manualCalibrateWithSyringe(); // Ejecutar calibración manual
+            break;
+    }
+}
+
+// --- BLE ---
+void setupBLE() {
+    BLEDevice::init("VO2SmartCurvo");
+    pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
+
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+    pCharacteristic = pService->createCharacteristic(
+        CHARACTERISTIC_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pCharacteristic->addDescriptor(new BLE2902());
+
+    pService->start();
+
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06); // Intervalo mínimo (~100ms)
+    pAdvertising->setMaxPreferred(0x12); // Intervalo máximo (~200ms)
+    BLEDevice::startAdvertising();
+    Serial.println("BLE initialized and advertising started.");
+}
+
+// Forward declaration to fix 'checkAdvertising' was not declared in this scope
+void checkAdvertising();
+
+void StreamBT() {
+  //HeaderStreamedBT = 1;// TEST: Deactivation of header
+  if (HeaderStreamedBT == 0) {
+    SerialBT.print("Time");
+    SerialBT.print(",");
+    SerialBT.print("VO2");
+    SerialBT.print(",");
+    SerialBT.print("VO2MAX");
+    SerialBT.print(",");
+    SerialBT.print("VO2total");
+    SerialBT.print(",");
+    SerialBT.print("kcal");
+    SerialBT.print(",");
+    SerialBT.print("Bvol");
+    SerialBT.print(",");
+    SerialBT.print("VEmin");
+    SerialBT.print(",");
+    SerialBT.print("Brate");
+    SerialBT.print(",");
+    SerialBT.print("outO2%");
+    SerialBT.print(",");
+    SerialBT.println("inO2%");
+    HeaderStreamedBT = 1;
+  }
+  SerialBT.print(float(TotalTime / 1000), 0);
+  SerialBT.print(",");
+  SerialBT.print(vo2Max);
+  SerialBT.print(",");
+  SerialBT.print(vo2MaxMax);
+  SerialBT.print(",");
+  SerialBT.print(vo2Total);
+  SerialBT.print(",");
+  SerialBT.print(calTotal);
+  SerialBT.print(",");
+  SerialBT.print(volumeExp);
+  SerialBT.print(",");
+  SerialBT.print(volumeVEmean);
+  SerialBT.print(",");
+  SerialBT.print(freqVEmean);
+  SerialBT.print(",");
+  SerialBT.print(lastO2);
+  SerialBT.print(",");
+  SerialBT.println(initialO2);
+}
+
+// --- ENVÍO DE DATOS BLE CADA SEGUNDO ---
+unsigned long lastBLESend = 0;
+void sendBLEData() {
+    if (deviceConnected && pCharacteristic != nullptr) {
+        String dataString = String(float(TotalTime / 1000), 0) + "," +
+                            String(vo2Max) + "," +
+                            String(vo2MaxMax) + "," +
+                            String(vo2Total) + "," +
+                            String(calTotal) + "," +
+                            String(volumeExp) + "," +
+                            String(volumeVEmean) + "," +
+                            String(freqVEmean) + "," +
+                            String(lastO2) + "," +
+                            String(initialO2);
+        pCharacteristic->setValue(dataString.c_str());
+        pCharacteristic->notify();
+    }
+}
+
+// --- BOTONES ---
+// void ReadButtons() is defined later in the file or in Untitled-1.cpp, so this duplicate is removed.
+
+// --- SPLASH Y BATERÍA ---
+void showSplashScreen() {
+    tft.fillScreen(TFT_BLACK);
+
+    // Dibujar encabezado
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawCentreString("VO2Smart", 120, 20, 4);
+
+    // Dibujar versión
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString(Version, 120, 50, 2);
+
+    // Dibujar mensaje de inicio
+    tft.drawCentreString("Iniciando...", 120, 80, 2);
+
+    // Dibujar contorno de la barra de progreso
+    int barX = 40, barY = 110, barWidth = 160, barHeight = 20;
+    tft.drawRect(barX, barY, barWidth, barHeight, TFT_WHITE);
+
+    // Actualizar la barra de progreso
+    for (int progress = 0; progress <= barWidth; progress++) {
+        tft.fillRect(barX + 1, barY + 1, progress, barHeight - 2, TFT_GREEN);
+        delay(20); // Ajusta el tiempo para controlar la velocidad de la barra
+    }
+
+    // Breve pausa al completar la barra
+    delay(500);
+}
+void drawBatteryIndicator() {
+    int x = 200, y = 5, w = 30, h = 12;
+    tft.drawRect(x, y, w, h, TFT_WHITE);
+    int fill = map((int)(Battery_Voltage * 100), 330, 420, 0, w - 4);
+    fill = constrain(fill, 0, w - 4);
+    tft.fillRect(x + 2, y + 2, fill, h - 4, (Battery_Voltage < 3.7) ? TFT_RED : TFT_GREEN);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(x - 40, y, 2);
+    tft.printf("%.2fV", Battery_Voltage);
+}
+
+void drawStatusIndicators() {
+    // Indicador de estado del sensor de oxígeno
+    tft.fillCircle(10, 10, 5, (lastO2 > 0) ? TFT_GREEN : TFT_RED);
+
+    // Indicador de estado del sensor de CO2
+    tft.fillCircle(30, 10, 5, (co2perc > 0) ? TFT_GREEN : TFT_RED);
+
+    // Indicador de conexión BLE
+    tft.fillCircle(50, 10, 5, deviceConnected ? TFT_BLUE : TFT_RED);
+}
+
+// --- FUNCIONES FALTANTES IMPLEMENTADAS ---
+
+void ConvertTime(float ms) {
+    long inms = long(ms);
+    int h, m, s;
+    String strh, strm, strs;
+    s = (inms / 1000) % 60;
+    m = (inms / 60000) % 60;
+    h = (inms / 3600000) % 24;
+    strs = String(s);
+    if (s < 10) strs = String("0") + strs;
+    strm = String(m);
+    if (m < 10) strm = String("0") + strm;
+    strh = String(h);
+    if (h < 10) strh = String("0") + strh;
+    TotalTimeMin = String(strh) + String(":") + String(strm) + String(":") + String(strs);
+}
+
+void ReadButtons() {
+    static int lastState1 = HIGH, lastState2 = HIGH;
+    int state1 = digitalRead(buttonPin1);
+    int state2 = digitalRead(buttonPin2);
+
+    if (state1 == LOW && lastState1 == HIGH) {
+        buttonPushCounter1++;
+    } else if (state1 == HIGH) {
+        buttonPushCounter1 = 0;
+    }
+    lastState1 = state1;
+
+    if (state2 == LOW && lastState2 == HIGH) {
+        buttonPushCounter2++;
+    } else if (state2 == HIGH) {
+        buttonPushCounter2 = 0;
+    }
+    lastState2 = state2;
+}
+
+void handleVO2Navigation() {
+    if (buttonPushCounter1 == 1) {
+        screenNr--;
+        if (screenNr < 1) screenNr = 5; // Ajustar al número total de pantallas
+        showScreen();
+    }
+
+    if (buttonPushCounter2 == 1) {
+        screenNr++;
+        if (screenNr > 5) screenNr = 1; // Ajustar al número total de pantallas
+        showScreen();
+    }
+}
+
+void handleDemoNavigation() {
+    ReadButtons();
+
+    // Botón 1: Cambiar a la siguiente pantalla
+    if (buttonPushCounter1 == 1) {
+        demo.currentScreen = (demo.currentScreen % 6) + 1; // Cambiado de 4 a 6
+        drawDemoScreen(demo.currentScreen);
+    }
+
+    // Botón 2: Pausar o continuar la simulación
+    if (buttonPushCounter2 == 1) {
+        demo.isPaused = !demo.isPaused;
+        tft.fillRoundRect(70, 80, 100, 40, 10, demo.isPaused ? TFT_ORANGE : TFT_GREEN);
+        tft.setTextColor(TFT_WHITE, demo.isPaused ? TFT_ORANGE : TFT_GREEN);
+        tft.drawCentreString(demo.isPaused ? "PAUSADO" : "CONTINUA", 120, 90, 2);
+    }
+}
+
+void autoCalibrate() {
+    // Ejemplo simple: promediar 50 lecturas de O2 y ajustar factor de corrección
+    float o2Sum = 0;
+    for (int i = 0; i < 50; i++) {
+        o2Sum += Oxygen.ReadOxygenData(COLLECT_NUMBER);
+        delay(100);
+    }
+    float o2Mean = o2Sum / 50.0f;
+    if (abs(o2Mean - 20.9) < 1.0) {
+        settings.correctionSensor = 20.9f / o2Mean;
+        saveSettings();
+        tft.fillScreen(TFT_GREEN);
+        tft.drawCentreString("CALIBRACION EXITOSA", 120, 55, 4);
+        delay(2000);
+    } else {
+        tft.fillScreen(TFT_RED);
+        tft.drawCentreString("CALIBRACION FALLIDA", 120, 55, 4);
+        delay(2000);
+    }
+}
+
+void manualCalibrateWithSyringe() {
+    tft.fillScreen(TFT_BLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.drawCentreString("INSERT 3L SYRINGE", 120, 30, 4);
+    while (digitalRead(buttonPin1) == HIGH) { delay(20); }
+    if (isnan(mySensor.getPressure())) {
+        tft.fillScreen(TFT_RED);
+        tft.drawCentreString("ERROR: SENSOR PRESION", 120, 55, 4);
+        delay(2000);
+        return;
+    }
+    tft.fillScreen(TFT_YELLOW);
+    tft.drawCentreString("INJECTING...", 120, 30, 4);
+    float startTime = millis();
+    volumeTotal = 0;
+    while (millis() - startTime < CALIB_TIMEOUT_MS) {
+        VolumeCalc();
+        int progress = map(volumeTotal * 1000, 0, SYRINGE_VOLUME, 0, 200);
+        tft.fillRect(21, 61, progress, 18, TFT_GREEN);
+        if (volumeTotal * 1000 >= SYRINGE_VOLUME) break;
+        delay(CALIB_UPDATE_INTERVAL_MS);
+    }
+    float error = abs(volumeTotal * 1000 - SYRINGE_VOLUME) / SYRINGE_VOLUME * 100.0;
+    if (error <= CALIB_ALLOWED_ERROR) {
+        tft.fillScreen(TFT_GREEN);
+        tft.setTextColor(TFT_WHITE, TFT_GREEN);
+        tft.drawCentreString("CALIBRACION EXITOSA", 120, 55, 4);
+        tft.drawCentreString("Error: " + String(error, 2) + "%", 120, 90, 2);
+        settings.correctionSensor *= (SYRINGE_VOLUME / (volumeTotal * 1000));
+        saveSettings();
+    } else {
+        tft.fillScreen(TFT_RED);
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+        tft.drawCentreString("CALIBRACION FALLIDA", 120, 55, 4);
+        tft.drawCentreString("Error: " + String(error, 2) + "%", 120, 90, 2);
+    }
+    delay(3000);
+}
+
+void calibrateFlowSensor() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString("Calibrando flujo...", 120, 50, 2);
+
+    volumeTotal2 = 0; // Reiniciar volumen total
+    TimerStart = millis();
+    TimerVolCalc = millis();
+
+    while ((millis() - TimerStart) < 10000) { // Calibración durante 10 segundos
+        float R = 287.05;
+        float tempK = TempC + 273.15;
+        rho = PresPa / (R * tempK);
+        rhoBTPS = PresPa / (292.9 * (35 + 273.15));
+    }
+}
+
+void VolumeCalc() {
+    float pressureraw = mySensor.getPressure();
+    pressure = pressure / 2 + pressureraw / 2;
+    if (isnan(pressure)) return;
+    if (pressure < 0) pressure = 0;
+    if (pressure < pressThreshold && readVE == 1) {
+        readVE = 0;
+        DurationVE = millis() - TimerVE;
+        TimerVE = millis();
+        volumeExp = volumeTotal;
+        volumeTotal = 0;
+        volumeVE = volumeExp / DurationVE * 60;
+        volumeExp = volumeExp / 1000;
+        volumeVEmean = (volumeVEmean * 3 / 4) + (volumeVE / 4);
+        if (volumeVEmean < 1) volumeVEmean = 0;
+        freqVE = 60000 / DurationVE;
+        if (volumeVE < 0.1) freqVE = 0;
+        freqVEmean = (freqVEmean * 3 / 4) + (freqVE / 4);
+        if (freqVEmean < 1) freqVEmean = 0;
+    }
+    if (millis() - TimerVE > 5000) readVE = 1;
+    if (pressure >= pressThreshold) {
+        massFlow = 1000 * sqrt((abs(pressure) * 2 * rho) / ((1 / (pow(area_2, 2))) - (1 / (pow(area_1, 2)))));
+        volFlow = massFlow / rho;
+        volFlow = volFlow * settings.correctionSensor;
+        volumeTotal = volFlow * (millis() - TimerVolCalc) + volumeTotal;
+        volumeTotal2 = volFlow * (millis() - TimerVolCalc) + volumeTotal2;
+    } else if ((volumeTotal2 - volumeTotalOld) > 200) {
+        expiratVol = (volumeTotal2 - volumeTotalOld) / 1000;
+        volumeTotalOld = volumeTotal2;
+    }
+}
+
+void handleBLEConnection() {
+    // Ejemplo: no hace nada, placeholder para lógica BLE
+}
+
+void showBLEStatus() {
+    // Ejemplo: muestra estado BLE en pantalla
+    tft.setCursor(180, 0, 2);
+    if (deviceConnected) {
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.print("BLE OK");
+    } else {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.print("BLE OFF");
+    }
+}
+
+void showScreen() {
+    ConvertTime(TotalTime);
+    tft.setRotation(1);
+    switch (screenNr) {
+        case 1: tftScreen1(); break;
+        case 2: tftScreen2(); break;
+        case 3: tftScreen3(); break;
+        case 4: tftScreen4(); break;
+        case 5: tftScreen5(); break;
+        case 6: tftParameters(); break;
+        default: tftScreen1(); break;
+    }
+}
+
+// --- FUNCIONES FALTANTES Y/O COMENTADAS ---
+
+// --- FUNCIONES INTEGRADAS DESDE Untitled-1.cpp ---
+
+void fnCalAir() {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(0, 5, 4);
+    tft.println("Usa 3L calib");
+    tft.setCursor(0, 30, 4);
+    tft.println("for sensor check.");
+    tft.setCursor(0, 105, 4);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("Presione para iniciar >>>");
+    while (digitalRead(buttonPin1));
+    TimerStart = millis();
+    volumeTotal2 = 0;
+    do {
+        VolumeCalc();
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.setCursor(0, 5, 4);
+        tft.println("Total Volume (ml):");
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setCursor(0, 55, 7);
+        tft.println(volumeTotal2, 0);
+        tft.setCursor(0, 105, 4);
+        tft.print("Tiempo: ");
+        tft.print((millis() - TimerStart) / 1000, 1);
+    } while ((millis() - TimerStart) < 10000);
+    settings.correctionSensor = 3000 / volumeTotal2;
+    saveSettings();
+}
+
+void fnCalO2() {
+    Oxygen.Calibrate(20.9, 0.0);
+    showParameters();
+}
+
+void tftScreen1() {
+    tft.fillScreen(TFT_BLACK); // Limpia la pantalla antes de dibujar
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 5, 4);
+    tft.print("Time  ");
+    tft.setCursor(120, 5, 4);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println(TotalTimeMin);
+
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 30, 4);
+    tft.print("VO2 ");
+    tft.setCursor(120, 30, 4);
+    tft.println(isnan(vo2Max) ? String("--") : String(vo2Max));
+
+    tft.setCursor(5, 55, 4);
+    tft.print("VO2MAX ");
+    tft.setCursor(120, 55, 4);
+    tft.println(isnan(vo2MaxMax) ? String("--") : String(vo2MaxMax));
+
+    tft.setCursor(5, 80, 4);
+    tft.print("VO2total ");
+    tft.setCursor(120, 80, 4);
+    tft.println(isnan(vo2Total) ? String("--") : String(vo2Total, 0));
+
+    tft.setCursor(5, 105, 4);
+    tft.print("kcal ");
+    tft.setCursor(120, 105, 4);
+    tft.println(isnan(calTotal) ? String("--") : String(calTotal, 0));
+}
+
+void tftScreen2() {
+    tft.fillScreen(TFT_BLACK);
+    if (DEMO) {
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString("DEMO", 5, 5, 2);
+    }
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 5, 4);
+    tft.print("Time  ");
+    tft.setCursor(120, 5, 4);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println(TotalTimeMin);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 30, 4);
+    tft.print("kcal ");
+    tft.setCursor(120, 30, 4);
+    tft.println(calTotal, 0);
+    tft.setCursor(5, 55, 4);
+    tft.print("kcal/h ");
+    tft.setCursor(120, 55, 4);
+    tft.println(vo2CalH, 0);
+    drawBatteryIndicator();
+}
+
+void tftScreen3() {
+    tft.fillScreen(TFT_BLACK);
+    if (DEMO) {
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+                      tft.drawString("DEMO", 5, 5, 2);
+    }
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 5, 4);
+    tft.print("Time  ");
+    tft.setCursor(120, 5, 4);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println(TotalTimeMin);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 30, 4);
+    tft.print("Bvol ");
+    tft.setCursor(120, 30, 4);
+    tft.println(volumeExp);
+    tft.setCursor(5,  55, 4);
+    tft.print("VEmin ");
+    tft.setCursor(120, 55, 4);
+    tft.println(volumeVEmean, 1);
+    tft.setCursor(5, 80, 4);
+       tft.print("Brate ");
+    tft.setCursor(120,  80, 4);
+    tft.println(freqVEmean, 1);
+    tft.setCursor(5, 105, 4);
+    tft.print("O2%diff ");
+    tft.setCursor(120, 105, 4);
+    float co2diff = lastO2 - initialO2;
+    tft.println(co2diff);
+    drawBatteryIndicator();
+}
+
+void tftScreen4() {
+    tft.fillScreen(TFT_BLACK);
+    if (DEMO) {
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString("DEMO", 5, 5, 2);
+    }
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 5, 4);
+    tft.print("Time ");
+    tft.setCursor(120, 5, 4);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+       tft.println(TotalTimeMin);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 30, 4);
+    tft.print("O2% ");
+    tft.setCursor(120, 30, 4);
+    tft.println(lastO2);
+    tft.setCursor(5, 55, 4);
+    tft.print("CO2 ");
+    tft.setCursor(120, 55, 4);
+    tft.println(co2perc * 100, 1);
+    tft.setCursor(5, 80, 4);
+    tft.print("Temp ");
+    tft.setCursor(120, 80, 4);
+    tft.println(TempC, 1);
+    tft.setCursor(5, 105, 4);
+    tft.print("Humidity ");
+    tft.setCursor(120, 105, 4);
+    tft.println(co2hum, 0);
+    drawBatteryIndicator();
+}
+
+void tftScreen5() {
+    tft.fillScreen(TFT_BLACK);
+    if (DEMO) {
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString("DEMO", 5, 5, 2);
+    }
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 5, 4);
+    tft.print("Time  ");
+    tft.setCursor(120, 5, 4);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println(TotalTimeMin);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 30, 4);
+    tft.print("VO2 ");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(90, 30, 7);
+    tft.println(vo2Max);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.setCursor(5, 80, 4);
+    tft.print("RQ ");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(90, 80, 7);
+    tft.println(respq);
+    drawBatteryIndicator();
+}
+
+void tftParameters() {
+    tft.fillScreen(TFT_BLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.setCursor(5, 5, 4);
+    tft.print("*C");
+    tft.setCursor(120, 5, 4);
+    tft.println(co2temp, 1);
+    tft.setCursor(5, 30, 4);
+    tft.print("hPA");
+    tft.setCursor(120, 30, 4);
+    tft.println((PresPa / 100));
+    tft.setCursor(5, 55, 4);
+    tft.print("kg/m3");
+    tft.setCursor(120, 55, 4);
+    tft.println(rho, 4);
+    tft.setCursor(5, 80, 4);
+    tft.print("kg");
+    tft.setCursor(45, 80, 4);
+    tft.println(settings.weightkg, 1);
+    tft.setCursor(120, 80, 4);
+    tft.print("cor");
+    tft.setCursor(180, 80, 4);
+    tft.println(settings.correctionSensor, 2);
+    tft.setCursor(5, 105, 4);
+    tft.print("inO2%");
+    tft.setCursor(120, 105, 4);
+    tft.println(initialO2);
+    drawBatteryIndicator();
+}
+
+void readCO2() {
+    static int errorCount = 0;
+    if (!settings.co2_on) return;
+    float result[3] = {0};
+    scd30.getCarbonDioxideConcentration(result);
+    if (result[0] < 300 || result[0] > 50000) {
+        errorCount++;
+        if (errorCount > 3) {
+            settings.co2_on = false;
+            Serial.println("Desactivando CO2 por lecturas inválidas");
+        }
+        return;
+    }
+    errorCount = 0;
+    co2ppm = filtroCO2.filtrar(result[0]); // Cambiado update -> filtrar
+    if (co2ppm >= 40000) {
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+        tft.drawCentreString("CO2 LIMITE!", 120, 55, 4);
+    }
+    if (DEMO) co2ppm = 30000;
+    if (initialCO2 == 0) initialCO2 = co2ppm;
+    co2perc = co2ppm / 10000;
+    co2temp = result[1];
+    co2hum = result[2];
+}
+
+void ReadO2() {
+    static int errorCount = 0;
+    float oxygenData = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+    if (oxygenData < 10.0 || oxygenData > 25.0) {
+        errorCount++;
+        Serial.print("Lectura O2 fuera de rango: ");
+        Serial.println(oxygenData);
+        if (errorCount > 5) {
+            if (!Oxygen.begin(Oxygen_IICAddress)) {
+                Serial.println("Fallo al reinicializar sensor O2");
+                return;
+            }
+            errorCount = 0;
+        }
+        return;
+    }
+    errorCount = 0;
+    oxygenData = filtroO2.filtrar(oxygenData);
+    lastO2 = oxygenData;
+    if (lastO2 > initialO2) initialO2 = lastO2;
+    if (DEMO) lastO2 = initialO2 - 4;
+    co2 = initialO2 - lastO2;
+}
+
+void vo2maxCalc() {
+    if (DEMO) return;
+    ReadO2();
+    AirDensity();
+    if (lastO2 < 10.0 || lastO2 > 25.0) {
+        Serial.println("Valor O2 inválido, omitiendo cálculo");
+        return;
+    }
+    co2 = initialO2 - lastO2;
+    if (co2 < 0) co2 = 0;
+    float vo2TotalRaw = volumeVEmean * rhoBTPS / rhoSTPD * co2 * 10;
+    if (vo2TotalRaw < 0 || vo2TotalRaw > 10000) {
+
+
+        Serial.println("Valor VO2 inválido, omitiendo cálculo");
+        return;
+    }
+    vo2Total = filtroVolumen.filtrar(vo2TotalRaw);
+    float vo2MaxRaw = vo2Total / settings.weightkg;
+    if (vo2MaxRaw < 3 || vo2MaxRaw > 100) {
+        Serial.println("VO2/kg fuera de rango fisiológico");
+        return;
+    }
+    vo2Max = filtroVO2.filtrar(vo2MaxRaw);
+    if (vo2Max > vo2MaxMax) vo2MaxMax = vo2Max;
+    vo2Cal = vo2Total / 1000 * 4.86;
+    calTotal = calTotal + vo2Cal * TimerVO2diff / 60000;
+    vo2CalH = vo2Cal * 60.0;
+}
+
+void showParameters() {
+    while (digitalRead(buttonPin2)) {
+        AirDensity();
+        tftParameters();
+        tft.setCursor(220, 5, 4);
+        tft.print(">\n");
+        delay(500);
+        tft.setCursor(220, 5, 4);
+        tft.print("    ");
+        delay(500);
+    }
+    while (digitalRead(buttonPin2) == 0);
+}
+
+void CheckInitialO2() {
+    initialO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+    if (initialO2 < 20.00) {
+        tft.fillScreen(TFT_RED);
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+        tft.setCursor(5, 5, 4);
+        tft.println("INITIAL O2% LOW!");
+        tft.setCursor(5, 30, 4);
+        tft.println("Wait to continue!");
+        while (digitalRead(buttonPin1)) {
+            initialO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+            tft.setCursor(5, 67, 4);
+            tft.print("O2: ");
+            tft.print(initialO2);
+            tft.println(" % ");
+            tft.setCursor(5, 105, 4);
+            tft.println("Continue              >>>");
+            delay(500);
+        }
+        if (initialO2 < 20.00) initialO2 = 20.90;
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.setCursor(5, 5, 4);
+        tft.println("Initial O2% set to:");
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setCursor(5, 55, 4);
+        tft.print(initialO2);
+        tft.println(" % ");
+        delay(5000);
+    }
+}
+
+void CheckInitialCO2() {
+    readCO2();
+    initialCO2 = co2ppm;
+    if (initialCO2 > 1000) {
+        tft.fillScreen(TFT_RED);
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+        tft.setCursor(5, 5, 4);
+        tft.println("INITIAL CO2 HIGH!");
+        tft.setCursor(5, 30, 4);
+        tft.println("Wait to continue!");
+        while (digitalRead(buttonPin1)) {
+            readCO2();
+            initialCO2 = co2ppm;
+            tft.setCursor(5, 67, 4);
+            tft.print("CO2: ");
+            tft.print(initialCO2, 0);
+            tft.println(" ppm ");
+            tft.setCursor(5, 105, 4);
+            tft.println("Continue              >>>");
+            delay(500);
+        }
+        if (initialCO2 > 1000) initialCO2 = 1000;
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.setCursor(5, 5, 4);
+        tft.println("Initial CO2 set to:");
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setCursor(5, 55, 4);
+        tft.print(initialCO2, 0);
+        tft.println(" ppm");
+        delay(5000);
+    }
+}
+
+void GetWeightkg() {
+    Timer5s = millis();
+    int weightChanged = 0;
+    tft.fillScreen(TFT_BLUE);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.drawString("Enter weight in kg", 20, 10, 4);
+    tft.drawString(String(settings.weightkg), 48, 48, 7);
+    while ((millis() - Timer5s) < 5000) {
+        ReadButtons();
+        if (buttonPushCounter1 > 0) {
+            settings.weightkg = settings.weightkg - 0.5;
+            if (buttonPushCounter1 > 8)
+                settings.weightkg = settings.weightkg - 1.5;
+            weightChanged = 1;
+        }
+        if (buttonPushCounter2 > 0) {
+            settings.weightkg = settings.weightkg + 0.5;
+            if (buttonPushCounter2 > 8)
+                settings.weightkg = settings.weightkg + 1.5;
+            weightChanged = 1;
+        }
+        if (settings.weightkg < 20)
+            settings.weightkg = 20;
+        if (settings.weightkg > 200)
+            settings.weightkg = 200;
+        if (weightChanged > 0) {
+            tft.fillScreen(TFT_BLUE);
+            tft.drawString("New weight in kg is:", 10, 10, 4);
+            tft.drawString(String(settings.weightkg), 48, 48, 7);
+            weightChanged = 0;
+            Timer5s = millis();
+        }
+        delay(200);
+    }
+}
+
+void readVoltage() {
+    uint16_t v = analogRead(ADC_PIN);
+    Battery_Voltage = ((float)v / 4095.0) * 2.0 * 3.3 * (vref / 1000.0);
+    if (Battery_Voltage >= 4.3)
+        tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    if (Battery_Voltage < 4.3)
+        tft.setTextColor(TFT_BLACK, TFT_GREEN);
+    if (Battery_Voltage < 3.9)
+        tft.setTextColor(TFT_BLACK, TFT_YELLOW);
+    if (Battery_Voltage < 3.7)
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.setCursor(0, 0, 4);
+    tft.print(String(Battery_Voltage) + "V");
+}
+
+bool checkCalibrationConditions() {
+    return ((PresPa > 95000) && (TempC >= 20.0 && TempC <= 25.0));
+}
+
+bool checkEnvironmentalStability() {
+    static float lastTemp = TempC;
+    static float lastPressure = PresPa;
+    bool stable = (abs(TempC - lastTemp) < 2.0) && (abs(PresPa - lastPressure) < 200.0);
+    lastTemp = TempC;
+    return stable;
+}
+
+void showCalibrationResult(bool passed, float error) {
+    tft.fillScreen(passed ? TFT_DARKGREEN : TFT_RED);
+    tft.setTextColor(TFT_WHITE);
+    tft.drawCentreString(passed ? "CALIBRACION EXITOSA" : "FALLA CALIBRACION", 120, 40, 2);
+    tft.drawCentreString("ISO 26782:2023", 120, 100, 2);
+    delay(3000);
+}
+
+void drawSyringeCalibrationScreen(float volInyectado, float progress) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawString("FLOW CALIB", 10, 5, 2);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.drawString("CANC", 195, 5, 2);
+    tft.drawRect(190, 3, 45, 20, TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString("INYECTE 3L", 120, 30, 2);
+    tft.drawRect(20, 50, 200, 25, TFT_WHITE);
+    int barWidth = (int)(196 * progress);
+    tft.fillRect(22, 52, barWidth, 21, TFT_GREEN);
+    if (barWidth > 40) {
+        tft.setTextColor(TFT_BLACK, TFT_GREEN);
+        tft.drawString(String((int)(progress*100)) + "%", barWidth - 30, 55, 2);
+    }
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString("Vol: " + String(volInyectado/1000, 1) + "/3.0L", 120, 85, 2);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.drawString("TEMP", 10, 110, 2);
+    tft.drawString("PRESS", 85, 110, 2);
+    tft.drawString("ERROR", 170, 110, 2);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(String(TempC, 1) + "C", 10, 130, 2);
+    tft.drawString(String(PresPa/100, 0) + "hPa", 85, 130, 2);
+    float error = fabs((volInyectado - SYRINGE_VOLUME)/SYRINGE_VOLUME) * 100;
+    if (error > CALIB_ALLOWED_ERROR) {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+    } else {
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    }
+    tft.drawString(String(error, 1) + "%", 170, 130, 2);
+    drawBatteryIndicator();
+}
+
+void logCalibration(float measuredVolume, float targetVolume) {
+    Serial.println("---CALIBRACIÓN DE FLUJO---");
+    Serial.print("Volumen Medido: ");
+    Serial.print(measuredVolume);
+    Serial.println(" mL");
+    Serial.print("Volumen Objetivo: ");
+    Serial.print(targetVolume);
+    Serial.println(" mL");
+    Serial.print("Error: ");
+    Serial.print(fabs((measuredVolume - targetVolume)/targetVolume)*100, 2);
+    Serial.println("%");
+    Serial.print("Temperatura: ");
+    Serial.print(TempC);
+    Serial.println(" °C");
+    Serial.print("Presión: ");
+    Serial.print(PresPa/100);
+    Serial.println(" hPa");
+}
+
+bool performSyringeCalibration() {
+    float totalVolume = 0;
+    uint32_t startTime = millis();
+    bool stableEnvironment = checkCalibrationConditions();
+    uint32_t lastMeasure = millis();
+    if (!stableEnvironment) {
+        tft.fillScreen(TFT_YELLOW);
+        tft.setTextColor(TFT_BLACK, TFT_YELLOW);
+        tft.drawCentreString("ADVERTENCIA", 120, 40, 4);
+        tft.drawCentreString("Condiciones ambientales", 120, 80, 2);
+        tft.drawCentreString("fuera de rango ideal", 120, 100, 2);
+        delay(2000);
+    }
+    volumeTotal2 = 0;
+    TimerStart = millis();
+    TimerVolCalc = millis();
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.drawCentreString("CALIBRACION DE FLUJO", 120, 30, 2);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawCentreString("Prepare jeringa de 3L", 120, 60, 2);
+    tft.drawCentreString("Presione para comenzar", 120, 90, 2);
+    while (digitalRead(buttonPin1)) { delay(50); }
+    while (!digitalRead(buttonPin1)) { delay(50); }
+    while((millis() - startTime) < CALIB_TIMEOUT_MS) {
+        VolumeCalc();
+        totalVolume = volumeTotal2;
+        if (millis() - lastMeasure >= 100) {
+            lastMeasure = millis();
+            float progress = constrain(totalVolume / SYRINGE_VOLUME, 0, 1);
+            drawSyringeCalibrationScreen(totalVolume, progress);
+            if(!checkEnvironmentalStability()) {
+                showError("Condiciones inestables!", false); // Agregado argumento critical
+                logCalibration(totalVolume, SYRINGE_VOLUME);
+                return false;
+            }
+        }
+        if (!digitalRead(buttonPin2)) {
+            tft.fillScreen(TFT_BLACK);
+            tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+            tft.drawCentreString("CALIBRACION CANCELADA", 120, 60, 2);
+            delay(2000);
+            return false;
+        }
+        if(!digitalRead(buttonPin1) || totalVolume >= SYRINGE_VOLUME) {
+            break;
+        }
+    }
+    TimerVolCalc = millis();
+    float error = fabs((totalVolume - SYRINGE_VOLUME)/SYRINGE_VOLUME) * 100;
+    bool passed = (error <= CALIB_ALLOWED_ERROR);
+    if(passed) {
+        settings.correctionSensor = SYRINGE_VOLUME / totalVolume;
+        saveSettings();
+    }
+    logCalibration(totalVolume, SYRINGE_VOLUME);
+    showCalibrationResult(passed, error);
+    return passed;
+}
+
+void saveSettings() {
+    bool changed = false;
+    for (int i = 0; i < sizeof(settings); ++i) {
+        byte b = EEPROM.read(i);
+        if (b != ((byte *)&settings)[i]) {
+            EEPROM.write(i, ((byte *)&settings)[i]);
+            changed = true;
+        }
+    }
+    if (changed) EEPROM.commit();
+}
+
+void showError(const char* message, bool critical) {
+    tft.fillScreen(critical ? TFT_RED : TFT_ORANGE);
+    tft.setTextColor(TFT_WHITE, critical ? TFT_RED : TFT_ORANGE);
+    tft.drawCentreString("ERROR", 120, 40, 4);
+    tft.drawCentreString(message, 120, 80, 2);
+    delay(critical ? 3000 : 1500);
+}
+
+void loadSettings() {
+    int version = EEPROM.read(0);
+    if (version == settings.version) {
+        for (int i = 0; i < sizeof(settings); ++i)
+            ((byte *)&settings)[i] = EEPROM.read(i);
+    }
+}
+
+// --- MODO VO2 COMPATIBLE CON VERSION 1 CURVO ---
+void runVO2Mode() {
+    // Inicialización de hardware y sensores (ajustado a versión 1 Curvo)
+    Wire.begin();
+    Serial.begin(115200);
+    if (!Serial) {
+        tft.drawString("Serial ERROR!", 0, 0, 4);
+    } else {
+        tft.drawString("Serial ok", 0, 0, 4);
+    }
+    // Bluetooth Serial clásico (si aplica)
+    #ifdef HAS_SERIALBT
+    if (!SerialBT.begin("VO2Smartmax")) {
+        tft.drawString("BT NOT ready!", 0, 25, 4);
+    } else {
+        tft.drawString("BT ready", 0, 25, 4);
+    }
+    #endif
+    if (!bmp.begin(0x76)) { // Especificar la dirección I2C del BMP280 0x76
+        tft.drawString("Temp/Pres. Error!", 0, 50, 4);
+    } else {
+        tft.drawString("Temp/Pres. ok", 0, 50, 4);
+    }
+    if (!Oxygen.begin(Oxygen_IICAddress)) {
+        tft.drawString("O2-Sensor ERROR!", 0, 75, 4);
+    } else {
+        tft.drawString("O2-Sensor ok", 0, 75, 4);
+    }
+    while (!mySensor.begin(MODEL_0025AD2)) {
+        tft.drawString("Flow-Sensor ERROR!", 0, 100, 4);
+    }
+    tft.drawString("Flow-Sensor ok", 0, 100, 4);
+    delay(2000);
+    // BLE inicialización (si aplica)
+    #ifdef HAS_BLE
+    setupBLE();
+    #endif
+    bpm = 30;
+    initialO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+    if (initialO2 < 20.00) {
+        tft.fillScreen(TFT_RED);
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+        tft.setCursor(5, 5, 4);
+        tft.println("INITIAL O2% LOW!");
+        tft.setCursor(5, 30, 4);
+        tft.println("Wait to continue!");
+        while (digitalRead(buttonPin1)) {
+            initialO2 = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+            tft.setCursor(5, 67, 4);
+            tft.println("O2%: ");
+            tft.setCursor(120, 67, 4);
+            tft.println(initialO2);
+            tft.setCursor(5, 105, 4);
+            tft.println("Continue              >>>");
+            delay(500);
+        }
+        if (initialO2 < 20.00) initialO2 = 20.90;
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.setCursor(5, 5, 4);
+        tft.println("Initial O2% set to:");
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setCursor(100, 55, 4);
+        tft.println(initialO2);
+        delay(5000);
+    }
+    GetWeightkg();
+    AirDensity();
+    tftParameters();
+    while (digitalRead(buttonPin2)) {
+        tft.setCursor(220, 5, 4);
+        tft.print(">\n");
+        delay(500);
+        tft.setCursor(220, 5, 4);
+        tft.print("    ");
+        delay(500);
+    }
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(0, 5, 4);
+    tft.println("Use 3L calib.pump");
+    tft.setCursor(0, 30, 4);
+    tft.println("for sensor check.");
+    tft.setCursor(0, 105, 4);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("Press to start      >>>");
+    while (digitalRead(buttonPin1));
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    TimerVolCalc = millis();
+    Timer5s = millis();
+    Timer1min = millis();
+    TimerVO2calc = millis();
+    TimerStart = millis();
+    TotalTime = 0;
+    
+    // Bucle principal del modo VO2
+    bool vo2Active = true;
+    while (vo2Active) {
+        TotalTime = millis() - TimerStart;
+        VolumeCalc();
+
+        // Cálculo de VO2 cada 5 segundos
+        if ((millis() - TimerVO2calc) > 5000 && pressure < 0.2) {
+            TimerVO2diff = millis() - TimerVO2calc;
+            TimerVO2calc = millis();
+            vo2maxCalc();
+            if (TotalTime >= 10000) {
+                showScreen();
+                volumeTotal2 = 0;
+                readVoltage();
+            }
+                        StreamBT();
+                        delay(100);
+        }
+
+        // Envío BLE cada segundo
+        if (millis() - lastBLESend > 1000) {
+            lastBLESend = millis();
+            sendBLEData();
+        }
+        
+        // Navegación entre pantallas
+        handleVO2Navigation();
+
+        // Salir del modo VO2 si ambos botones se mantienen presionados
+            if (buttonPushCounter1 > 20 && buttonPushCounter2 > 20) {
+                vo2Active = false;
+                showCarouselMenu();
+                return;
+            }
+                        }
+        }
+        
+void AirDensity() {
+    TempC = bmp.readTemperature(); // Leer temperatura del sensor barométrico BMP180
+    PresPa = bmp.readPressure();   // Leer presión del sensor barométrico BMP180
+
+    if (isnan(TempC) || isnan(PresPa)) {
+        tft.fillScreen(TFT_RED);
+        tft.setTextColor(TFT_WHITE, TFT_RED);
+        tft.drawCentreString("Temp/Press Error!", 120, 60, 4);
+        delay(2000);
+        return;
+    }
+
+    rho = PresPa / (TempC + 273.15) / 287.058;  // Cálculo de densidad del aire seco
+    rhoBTPS = PresPa / (35 + 273.15) / 292.9;   // Densidad en condiciones BTPS: 35°C, 95% humedad
+}

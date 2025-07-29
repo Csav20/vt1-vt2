@@ -25,12 +25,42 @@ private:
 
 ### 2. **Módulo de Sensores**
 ```cpp
+// KalmanFilter.h (Simplified definition for now)
+#pragma once
+class KalmanFilter {
+public:
+    KalmanFilter(float process_noise = 0.01, float measurement_noise = 0.1, float initial_error = 1.0)
+        : Q(process_noise), R(measurement_noise), P(initial_error), x(0) {}
+
+    float update(float measurement) {
+        // Prediction
+        P = P + Q;
+        // Update
+        K = P / (P + R);
+        x = x + K * (measurement - x);
+        P = (1 - K) * P;
+        return x;
+    }
+    void reset(float initial_value = 0.0, float initial_error = 1.0) {
+        x = initial_value;
+        P = initial_error;
+    }
+private:
+    float Q; // Process noise covariance
+    float R; // Measurement noise covariance
+    float P; // Estimation error covariance
+    float x; // Value
+    float K; // Kalman gain
+};
+
 // SensorManager.h
 #pragma once
 #include "DFRobot_OxygenSensor.h"
 #include "Omron_D6FPH.h"
 #include "SCD30.h"
 #include "Adafruit_BMP280.h"
+// Forward declare KalmanFilter if it's defined elsewhere, or include its definition
+// For now, assuming simplified definition is placed above or in a common header
 
 class SensorManager {
 public:
@@ -61,6 +91,10 @@ private:
 // MetabolicCalculator.h
 #pragma once
 #include "CircularBuffer.h"
+// Assuming SensorManager.h is included where calculate is called, or SensorData is forward-declared
+// #include "SensorManager.h" // Or forward-declare struct SensorManager::SensorData;
+// Assuming KalmanFilter is defined (e.g. in a common header or above)
+// #include "KalmanFilter.h"
 
 class MetabolicCalculator {
 public:
@@ -72,10 +106,17 @@ public:
         float energyExpenditure;
         float carbPercentage;
         float fatPercentage;
+        // VO₂ Kinetics related data
+        float tauVO2;               // Time constant for VO₂ kinetics
+        float vo2_steady_state;     // VO₂ at steady state before transition
+        float vo2_amplitude;        // Amplitude of VO₂ change during transition
+        float vo2_phase2;           // Current VO₂ value during phase II of kinetics
+        bool exercise_transition_active; // Flag indicating if currently in transition
     };
 
-    static void configure(float weightKg, bool co2SensorEnabled);
-    static void calculate(const SensorManager::SensorData& input, MetabolicData& output);
+    static void configure(float weightKg, bool co2SensorEnabled, float initialTauVO2 = 30.0f); // Added initialTauVO2
+    // Changed signature to accept volFlow for transition detection
+    static void calculate(const SensorManager::SensorData& input, float currentVolFlow, MetabolicData& output);
     static void detectThresholds();
     
 private:
@@ -83,12 +124,211 @@ private:
     static bool hasCO2Sensor;
     static CircularBuffer<float, 30> vo2Buffer;
     static CircularBuffer<float, 30> vco2Buffer;
-    
+
+    // VO₂ Kinetics related private members
+    static unsigned long transition_time; // ms, time when transition started
+    static bool exercise_transition;      // True if in exercise intensity transition
+    static float current_tauVO2;          // Current tauVO2 value used in calculations
+    static KalmanFilter volFlowFilter;    // Kalman filter for volumetric flow
+
+    static void detectExerciseTransition(float currentVolFlow, const MetabolicData& currentOutput); // Added currentOutput for vo2_steady_state
+    static void updateTauVO2(); // Placeholder for now
+
     static void calculateVO2Wasserman();
     static void calculateVO2Beaver();
     static void calculateVO2Dickhuth();
 };
 ```
+
+// --- Start of MetabolicCalculator.cpp section ---
+// Initialize static members
+float MetabolicCalculator::weight = 75.0f;
+bool MetabolicCalculator::hasCO2Sensor = false;
+CircularBuffer<float, 30> MetabolicCalculator::vo2Buffer;
+CircularBuffer<float, 30> MetabolicCalculator::vco2Buffer;
+unsigned long MetabolicCalculator::transition_time = 0;
+bool MetabolicCalculator::exercise_transition = false;
+float MetabolicCalculator::current_tauVO2 = 30.0f; // Default tau
+KalmanFilter MetabolicCalculator::volFlowFilter(0.02f, 0.1f, 1.0f);
+
+
+void MetabolicCalculator::configure(float weightKg, bool co2SensorEnabled, float initialTauVO2) {
+    weight = weightKg;
+    hasCO2Sensor = co2SensorEnabled;
+    current_tauVO2 = initialTauVO2;
+    volFlowFilter.reset();
+    exercise_transition = false;
+    transition_time = millis();
+}
+
+void MetabolicCalculator::detectExerciseTransition(float currentVolFlow, const MetabolicData& currentOutputRef) {
+    // Pass currentOutputRef to potentially use currentOutput.vo2 as the basis for vo2_steady_state
+    // if a transition is detected.
+    static float last_filtered_volFlow = 0.0f;
+    static bool first_run_detect = true;
+
+    float filtered_volFlow = volFlowFilter.update(currentVolFlow);
+
+    if (first_run_detect) {
+        last_filtered_volFlow = filtered_volFlow;
+        first_run_detect = false;
+        return;
+    }
+
+    const float FLOW_CHANGE_THRESHOLD = 10.0f;
+    const unsigned long MIN_TRANSITION_INTERVAL = 15000;
+
+    if (!exercise_transition && (millis() - transition_time > MIN_TRANSITION_INTERVAL)) {
+        if (abs(filtered_volFlow - last_filtered_volFlow) > FLOW_CHANGE_THRESHOLD) {
+            exercise_transition = true; // Flag that a transition has started
+            transition_time = millis();
+            // Actual output.vo2_steady_state and output.vo2_amplitude are set in calculate()
+            // using the VO2 value from *before* this flag was set.
+        }
+    }
+    last_filtered_volFlow = filtered_volFlow;
+}
+
+void MetabolicCalculator::updateTauVO2() {
+    // Placeholder for dynamic Tau calculation.
+    // For now, tau is fixed or set via configure().
+}
+
+void MetabolicCalculator::calculate(const SensorManager::SensorData& input, float currentVolFlow, MetabolicData& output) {
+    // Store previous VO2 for steady state if a transition starts
+    static float previous_vo2_for_steady_state = output.vo2;
+
+    // Call transition detection. Pass a reference to 'output' which contains the most recent calculations.
+    detectExerciseTransition(currentVolFlow, output);
+
+    // Standard VO2 calculation (will be overridden if in transition)
+    // These are example calculations based on typical formulas.
+    // Constants like FI02 (Fraction of Inspired O2, typically 0.2093) and FICO2 (Fraction of Inspired CO2, typically 0.0004)
+    // would usually be defined globally or as constants in this class.
+    const float FI02 = 0.2093f;
+    const float FICO2 = 0.0004f; // Negligible for some calculations but good to have
+
+    // VE_BTPS: Ventilation at Body Temperature Pressure Saturated.
+    // This calculation is simplified. A proper calculation would involve:
+    // VE_ATPS (Ambient Temperature Pressure Saturated) from flow sensor, then convert to BTPS, then STPD for VO2/VCO2.
+    // For now, let's assume input.pressure is related to VE (Ventilation per minute, L/min)
+    // and needs appropriate conversion factors based on sensor specifics.
+    // This is a MAJOR simplification and needs to be replaced with actual flow-to-VE logic.
+    // Let's assume input.pressure is a proxy for VE_STPD for this placeholder logic.
+    // A more realistic approach: currentVolFlow (L/s) -> integrate for breath_volume (L) -> VE (L/min)
+    // For now, let's use a placeholder for VE_STPD calculation:
+    float ve_stpd = input.pressure; // Placeholder: input.pressure should be processed into VE (L/min) at STPD
+
+    if (input.o2Percent <= 0 || input.o2Percent > FI02*100) { // Basic validation for FEO2
+         // output.vo2 = 0; // Or handle error
+    } else {
+        float feo2 = input.o2Percent / 100.0f; // Fraction of Expired O2
+        // Haldane transformation might be needed if only O2 is measured accurately without CO2 for RQ.
+        // VO2 (L/min) = VE_STPD * (FI02 * (1 - FECO2 - FEO2) / (1 - FEO2) - FEO2)
+        // Simplified: VO2 = VE_STPD * (FIO2 - FEO2) / (1 - FEO2) if FECO2 is not used in this part of formula
+        // Or even simpler if (1-FEO2) denominator is ignored for approximation: VE_STPD * (FIO2 - FEO2)
+        output.vo2 = ve_stpd * (FI02 - feo2); // L/min
+        if (weight > 0) {
+            output.vo2 = (output.vo2 * 1000.0f) / weight; // mL/min/kg
+        } else {
+            output.vo2 = 0; // Avoid division by zero
+        }
+    }
+
+    // VCO2 and RER Calculation
+    if (hasCO2Sensor && input.co2Ppm > 0) {
+        float feco2 = input.co2Ppm / 10000.0f; // Fraction of Expired CO2
+        output.vco2 = ve_stpd * (feco2 - FICO2); // L/min
+        if (weight > 0) {
+            output.vco2 = (output.vco2 * 1000.0f) / weight; // mL/min/kg
+        } else {
+            output.vco2 = 0;
+        }
+        if (output.vo2 > 0.001f) { // Avoid division by zero for RER
+            output.rer = output.vco2 / output.vo2; // This RER is L/L. For mol/mol, consider molar masses.
+        } else {
+            output.rer = 0;
+        }
+    } else {
+        output.vco2 = 0;
+        output.rer = 0;
+    }
+
+    // Kinetics Calculation
+    if (exercise_transition) {
+        // If this is the first cycle of a new transition, set steady_state and initial amplitude
+        if (output.vo2_steady_state == 0.0f && output.vo2_amplitude == 0.0f) { // Check if not already set for this transition
+            output.vo2_steady_state = previous_vo2_for_steady_state;
+            // Estimate amplitude: could be based on current raw VO2 vs steady_state, or a fixed percentage increase expectation
+            // For now, a simple estimation. This needs refinement.
+            float current_raw_vo2_estimate = output.vo2; // Using the STPD calculation as a rough target
+            output.vo2_amplitude = current_raw_vo2_estimate - output.vo2_steady_state;
+            if (output.vo2_amplitude < 0) output.vo2_amplitude = 0; // Amplitude should not be negative
+        }
+
+        unsigned long elapsed_time_ms = millis() - transition_time;
+        output.vo2_phase2 = output.vo2_amplitude * (1.0f - exp(- (float)elapsed_time_ms / (current_tauVO2 * 1000.0f)));
+        output.vo2 = output.vo2_steady_state + output.vo2_phase2; // Override standard VO2 with kinetic model
+
+        // Check for transition completion
+        if (output.vo2_phase2 >= 0.95f * output.vo2_amplitude || elapsed_time_ms > (5 * (unsigned long)(current_tauVO2 * 1000.0f)) ) { // 95% of amplitude or 5*tau
+            exercise_transition = false; // End of transition
+            output.vo2_steady_state = 0.0f; // Reset for next potential transition
+            output.vo2_amplitude = 0.0f;  // Reset
+            output.vo2_phase2 = 0.0f;     // Reset
+            // Serial.println("MetabolicCalculator: Exercise transition ENDED."); // For debugging
+        }
+    } else {
+        // Not in transition, so update the stored previous_vo2 for the next potential steady_state
+        previous_vo2_for_steady_state = output.vo2;
+        output.vo2_steady_state = 0.0f; // Not in transition
+        output.vo2_amplitude = 0.0f;  // Not in transition
+        output.vo2_phase2 = 0.0f;     // Not in transition
+    }
+    output.exercise_transition_active = exercise_transition;
+    output.tauVO2 = current_tauVO2;
+
+
+    // Update VO2 Max
+    if (output.vo2 > output.vo2Max) {
+        output.vo2Max = output.vo2;
+    }
+
+    // Energy Expenditure (simplified Weir equation based on VO2 and RER)
+    if (output.rer > 0 && output.vo2 > 0) { // Ensure RER and VO2 are valid
+        output.energyExpenditure = ((3.815f + 1.232f * output.rer) * (output.vo2 * weight / 1000.0f)); // kcal/min
+    } else if (output.vo2 > 0) { // Estimate using only VO2 if RER is not available (approx 4.825 kcal/L O2)
+        output.energyExpenditure = (4.825f * (output.vo2 * weight / 1000.0f)); // kcal/min
+    } else {
+        output.energyExpenditure = 0;
+    }
+
+    // Carb/Fat Percentage (very rough estimation based on RER)
+    if (output.rer >= 1.0f) {
+        output.carbPercentage = 100.0f;
+        output.fatPercentage = 0.0f;
+    } else if (output.rer <= 0.71f) { // Pure fat oxidation
+        output.carbPercentage = 0.0f;
+        output.fatPercentage = 100.0f;
+    } else if (output.rer > 0.71f && output.rer < 1.0f) { // Mixed substrate
+        // Linear interpolation from Lusk table (simplified)
+        output.carbPercentage = (output.rer - 0.707f) / (1.0f - 0.707f) * 100.0f;
+        output.carbPercentage = constrain(output.carbPercentage, 0.0f, 100.0f);
+        output.fatPercentage = 100.0f - output.carbPercentage;
+    } else { // Default or if RER is invalid
+        output.carbPercentage = 50.0f; // Default assumption
+        output.fatPercentage = 50.0f;
+    }
+
+    // Store in buffers for threshold detection
+    vo2Buffer.push(output.vo2);
+    if (hasCO2Sensor) {
+        vco2Buffer.push(output.vco2);
+    }
+}
+
+
+// --- End of MetabolicCalculator.cpp section ---
 
 ### 4. **Módulo de Interfaz Gráfica**
 ```cpp
@@ -105,7 +345,8 @@ public:
         RESPIRATORY,
         THRESHOLDS,
         CALORIMETRY,
-        ENVIRONMENT
+        ENVIRONMENT,
+        KINETICS_INFO // New screen for VO₂ Kinetics
     };
 
     static void initialize();
@@ -122,6 +363,7 @@ private:
     static void drawThresholds();
     static void drawCalorimetry();
     static void drawEnvironment();
+    static void drawKineticsScreen(); // Declaration for the new screen
     static void drawBatteryIndicator(float voltage);
 };
 ```
@@ -251,15 +493,21 @@ private:
 #include "DisplayManager.h"
 
 SemaphoreHandle_t CoreManager::xDataMutex = NULL;
-SemaphoreHandle_t CoreManager::xDisplayMutex = NULL;
+SemaphoreHandle_t CoreManager::xDisplayMutex = NULL; // Already used by DisplayManager for its internal data
 SemaphoreHandle_t CoreManager::xSensorMutex = NULL;
+
+// Shared data structure between sensorTask and uiTask
+static MetabolicCalculator::MetabolicData sharedMetabolicData;
 
 void CoreManager::initialize() {
     xDataMutex = xSemaphoreCreateMutex();
-    xDisplayMutex = xSemaphoreCreateMutex();
+    xDisplayMutex = xSemaphoreCreateMutex(); // Ensure this is the same mutex DisplayManager uses internally or manage separately
     xSensorMutex = xSemaphoreCreateMutex();
     
     SensorManager::begin();
+    // Initialize MetabolicCalculator with default weight, CO2 sensor status, and tau.
+    // These could be loaded from ConfigurationManager later.
+    MetabolicCalculator::configure(75.0f, false, 30.0f);
     DisplayManager::initialize();
 }
 
@@ -273,35 +521,61 @@ void CoreManager::createTasks() {
 
 void CoreManager::sensorTask(void* params) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(50); // 20Hz
+
+    SensorManager::SensorData sensorData; // Re-use this struct
     
     while(true) {
-        SensorManager::SensorData sensorData;
-        
-        if(xSemaphoreTake(xSensorMutex, pdMS_TO_TICKS(100))) {
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+
+        if(xSemaphoreTake(xSensorMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             SensorManager::readSensors(sensorData);
             xSemaphoreGive(xSensorMutex);
+        } else {
+            // Failed to get sensor mutex, skip this cycle
+            continue;
         }
 
-        if(xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(100))) {
-            MetabolicCalculator::MetabolicData metabolicData;
-            MetabolicCalculator::calculate(sensorData, metabolicData);
+        // currentVolFlow: This needs to be derived from sensorData.
+        // Assuming sensorData.pressure is a proxy or raw value for flow calculation.
+        // This is a placeholder. Actual conversion from pressure to L/min flow is complex.
+        float currentVolFlow = sensorData.pressure; // EXAMPLE: Replace with actual flow calculation
+
+        if(xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            // Calculate metabolic data and store it in the shared structure
+            MetabolicCalculator::calculate(sensorData, currentVolFlow, sharedMetabolicData);
             xSemaphoreGive(xDataMutex);
+        } else {
+            // Failed to get data mutex, skip calculation for this cycle
+            // sharedMetabolicData will be stale, but uiTask will use the last good data.
         }
-        
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(50)); // 20Hz
     }
 }
 
 void CoreManager::uiTask(void* params) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xFrequency = pdMS_TO_TICKS(100); // 10Hz
+
+    MetabolicCalculator::MetabolicData localMetabolicDataCopy; // Local copy for display
     
     while(true) {
-        if(xSemaphoreTake(xDisplayMutex, pdMS_TO_TICKS(100))) {
-            DisplayManager::update();
-            xSemaphoreGive(xDisplayMutex);
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+
+        // Safely copy shared data to local copy for display
+        if(xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            localMetabolicDataCopy = sharedMetabolicData;
+            xSemaphoreGive(xDataMutex);
+
+            // Update DisplayManager with the fresh local copy
+            // DisplayManager::setCurrentMetabolicData is protected by xDisplayMutex internally
+            DisplayManager::setCurrentMetabolicData(localMetabolicDataCopy);
+        } else {
+            // Failed to get data mutex, DisplayManager will use its last copy of data
+            // Or, could decide not to call update if data is too stale.
         }
-        
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(100)); // 10Hz
+
+        // DisplayManager::update is protected by xDisplayMutex internally for TFT operations
+        DisplayManager::update();
     }
 }
 ```
@@ -600,13 +874,90 @@ void DisplayManager::update() {
         case THRESHOLDS: drawThresholds(); break;
         case CALORIMETRY: drawCalorimetry(); break;
         case ENVIRONMENT: drawEnvironment(); break;
+        case KINETICS_INFO: drawKineticsScreen(); break; // Call the new screen function
     }
     needsRefresh = false;
 }
 
+// Placeholder for how DisplayManager gets data.
+// In a real implementation, this would be updated by CoreManager::uiTask
+static MetabolicCalculator::MetabolicData latestDisplayData;
+
+// Call this from CoreManager::uiTask to update the data for the display
+void DisplayManager::setCurrentMetabolicData(const MetabolicCalculator::MetabolicData& data) {
+    if (xSemaphoreTake(xDisplayMutex, pdMS_TO_TICKS(10))) { // Use the existing display mutex if available, or a new one for data
+        latestDisplayData = data;
+        xSemaphoreGive(xDisplayMutex);
+    }
+}
+
+
+void DisplayManager::drawKineticsScreen() {
+    // This function needs access to the latest MetabolicData.
+    // For now, we'll use 'latestDisplayData' which should be updated by CoreManager.
+    // Ensure proper mutex protection if latestDisplayData is accessed from different tasks.
+    MetabolicCalculator::MetabolicData dataToDisplay;
+    if (xSemaphoreTake(xDisplayMutex, pdMS_TO_TICKS(10))) { // Protect access
+        dataToDisplay = latestDisplayData;
+        xSemaphoreGive(xDisplayMutex);
+    } else {
+        // Could not get mutex, display stale data or error
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.drawString("Data Lock!", 10, 10, 2);
+        return;
+    }
+
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.setCursor(10, 10);
+    tft.setTextSize(2); // Use setTextSize for TFT_eSPI
+    tft.print("VO2 Kinetics");
+
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(1); // Reset text size for data fields
+
+    tft.setCursor(10, 40);
+    tft.print("State: ");
+    tft.print(dataToDisplay.exercise_transition_active ? "Transition" : "Steady State");
+
+    tft.setCursor(10, 60);
+    tft.print("Tau VO2 (s): ");
+    tft.print(dataToDisplay.tauVO2, 1);
+
+    tft.setCursor(10, 80);
+    tft.print("VO2 Steady (ml/kg/min): ");
+    tft.print(dataToDisplay.vo2_steady_state, 1);
+
+    tft.setCursor(10, 100);
+    tft.print("VO2 Amplitude: ");
+    tft.print(dataToDisplay.vo2_amplitude, 1);
+
+    tft.setCursor(10, 120);
+    tft.print("VO2 Phase2: ");
+    tft.print(dataToDisplay.vo2_phase2, 1);
+
+    // Potentially add a small graph or progress bar for vo2_phase2 vs vo2_amplitude
+    if (dataToDisplay.exercise_transition_active && dataToDisplay.vo2_amplitude > 0) {
+        int barWidth = 100; // Example width
+        int progress = (int)((dataToDisplay.vo2_phase2 / dataToDisplay.vo2_amplitude) * barWidth);
+        progress = constrain(progress, 0, barWidth);
+        tft.drawRect(10, 140, barWidth + 2, 12, TFT_WHITE);
+        tft.fillRect(11, 141, progress, 10, TFT_GREEN);
+    }
+     // drawBatteryIndicator(PowerManager::getBatteryLevel()); // Assuming PowerManager is accessible
+}
+
+
 void DisplayManager::drawMainMetrics() {
-    MetabolicCalculator::MetabolicData data;
-    // Obtener datos actuales (simulado)
+    // This function needs access to the latest MetabolicData.
+    MetabolicCalculator::MetabolicData dataToDisplay;
+    if (xSemaphoreTake(xDisplayMutex, pdMS_TO_TICKS(10))) { // Protect access
+        dataToDisplay = latestDisplayData; // Use the shared data
+        xSemaphoreGive(xDisplayMutex);
+    } else {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.drawString("Data Lock!", 10, 10, 2);
+        return;
+    }
     
     tft.setTextColor(TFT_CYAN, TFT_BLACK);
     tft.drawCentreString("VO2 SMART", 120, 10, 2);

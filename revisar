@@ -16,9 +16,18 @@
 #include <Arduino.h>
 #include "esp_adc_cal.h" // ADC calibration data
 #include <EEPROM.h>      // include library to read and write settings from flash
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 #define ADC_EN 14        // ADC_EN is the ADC detection enable port
 #define ADC_PIN 34
 int vref = 1100;
+
+// Mutex declarations for thread safety
+SemaphoreHandle_t sensorDataMutex = NULL;
+SemaphoreHandle_t settingsMutex = NULL;
+SemaphoreHandle_t errorLogMutex = NULL;
+SemaphoreHandle_t calculationMutex = NULL;
 
 #include "DFRobot_OxygenSensor.h" //Library for Oxygen sensor
 #include "SCD30.h"                //Library for CO2 sensor
@@ -85,76 +94,149 @@ void runVO2Mode(); // Forward declaration for runVO2Mode
 void loop();
 void setup();
 
-// Clases para filtros
+// Nuevas funciones para validación de datos y manejo centralizado de errores
+bool validateSensorData(float value, float min, float max, const char* sensorName);
+void logSensorError(const char* sensorName, float value, const char* reason);
+bool isValidO2Reading(float o2Value);
+bool isValidCO2Reading(float co2Value);
+bool isValidPressureReading(float pressure);
+bool isValidTemperatureReading(float temperature);
+void initializeErrorLogging();
+uint32_t calculateEEPROMChecksum(void* data, size_t size);
+bool verifyEEPROMIntegrity();
+void saveSettingsWithChecksum();
+bool loadSettingsWithChecksum();
+
+// ============================================================================
+// CLASES DE FILTROS OPTIMIZADAS PARA PROCESAMIENTO EN TIEMPO REAL
+// ============================================================================
+
+/**
+ * Filtro de Kalman optimizado para datos de sensores
+ * Implementa el algoritmo discreto de Kalman con predicción y corrección
+ * Optimizado para operaciones de punto flotante del ESP32
+ */
 class FiltroKalman {
 public:
+    /**
+     * Constructor del filtro de Kalman
+     * @param _q Ruido del proceso (menor = más suave, mayor = más responsivo)
+     * @param _r Ruido de medición (menor = más confianza en mediciones)
+     */
     FiltroKalman(float _q = 0.1, float _r = 0.1) : q(_q), r(_r), x(0), p(1) {}
 
-    float filtrar(float medida) {
-        // Predicción
-        float p_temp = p + q;
+    /**
+     * Procesa una nueva medición con el filtro de Kalman
+     * @param medida Nueva medición del sensor
+     * @return Valor filtrado estimado
+     */
+    inline float filtrar(float medida) {
+        // Paso de predicción: proyectar estado hacia adelante
+        float p_pred = p + q;
 
-        // Actualización
-        float k = p_temp / (p_temp + r);
-        x = x + k * (medida - x);
-        p = (1 - k) * p_temp;
+        // Paso de corrección: calcular ganancia de Kalman
+        float k = p_pred / (p_pred + r);
+        
+        // Actualizar estimación y covarianza
+        x += k * (medida - x);
+        p = (1.0f - k) * p_pred;
 
         return x;
     }
+    
+    /**
+     * Ajusta dinámicamente los parámetros del filtro
+     * Útil para adaptar el filtro a diferentes condiciones de operación
+     */
+    inline void ajustarParametros(float nuevo_q, float nuevo_r) {
+        q = nuevo_q;
+        r = nuevo_r;
+    }
+    
+    /**
+     * Reinicia el filtro con un nuevo valor inicial
+     */
+    inline void reiniciar(float valor_inicial = 0) {
+        x = valor_inicial;
+        p = 1.0f;
+    }
 
 private:
-    float q; // Ruido del proceso
-    float r; // Ruido de la medición
-    float x; // Valor estimado
-    float p; // Covarianza de la estimación
+    float q; // Varianza del ruido del proceso
+    float r; // Varianza del ruido de medición
+    float x; // Estado estimado actual
+    float p; // Covarianza del error de estimación
 };
 
+/**
+ * Filtro de Kalman con inicialización personalizada
+ * Especializado para sensores que requieren valores iniciales específicos
+ */
 class FiltroKalmanGauss {
 public:
     FiltroKalmanGauss(float _valorInicial = 0, float _q = 0.1) 
         : valorEstimado(_valorInicial), p(1), q(_q), r(0.1) {}
     
-    float filtrar(float medida) {
-        // Predicción
+    inline float filtrar(float medida) {
         float p_temp = p + q;
-        
-        // Actualización
         float k = p_temp / (p_temp + r);
-        valorEstimado = valorEstimado + k * (medida - valorEstimado);
-        p = (1 - k) * p_temp;
-        
+        valorEstimado += k * (medida - valorEstimado);
+        p = (1.0f - k) * p_temp;
         return valorEstimado;
     }
 
 private:
     float valorEstimado;
-    float p;
-    float q;
-    float r;
+    float p, q, r;
 };
 
+/**
+ * Filtro de Kalman unificado con interfaz consistente
+ * Versión optimizada que combina las mejores características
+ */
 class KalmanFilter {
 public:
     KalmanFilter(float q = 0.01, float r = 0.1, float initial = 0.0)
         : q(q), r(r), x(initial), p(1.0) {}
-    float filtrar(float measurement) {
+        
+    inline float filtrar(float measurement) {
+        // Algoritmo optimizado de Kalman en una sola pasada
         float p_temp = p + q;
         float k = p_temp / (p_temp + r);
         x += k * (measurement - x);
-        p = (1 - k) * p_temp;
+        p = (1.0f - k) * p_temp;
         return x;
     }
+    
 private:
     float q, r, x, p;
 };
 
+/**
+ * Filtro de promedio móvil exponencial optimizado
+ * Más eficiente que Kalman para aplicaciones simples de suavizado
+ * Inspirado en distribución Maxwell-Boltzmann pero simplificado
+ */
 class MaxwellBoltzmannFilter {
 public:
     MaxwellBoltzmannFilter(float _alpha = 0.1) : alpha(_alpha), lastValue(0) {}
     
-    float filtrar(float value) {
-        lastValue = lastValue * (1 - alpha) + value * alpha;
+    /**
+     * Filtro exponencial simple: y[n] = α*x[n] + (1-α)*y[n-1]
+     * @param value Nueva medición
+     * @return Valor filtrado
+     */
+    inline float filtrar(float value) {
+        lastValue += alpha * (value - lastValue); // Forma optimizada
         return lastValue;
+    }
+    
+    /**
+     * Ajusta la respuesta del filtro dinámicamente
+     * @param nuevo_alpha Factor de suavizado (0-1)
+     */
+    inline void ajustarAlpha(float nuevo_alpha) {
+        alpha = constrain(nuevo_alpha, 0.001f, 0.999f);
     }
 
 private:
@@ -162,37 +244,68 @@ private:
     float lastValue;
 };
 
+/**
+ * Filtro de Kalman con término de no-linealidad
+ * Diseñado para señales con componentes periódicas o no-lineales
+ * NOTA: El término "cuántico" es metafórico - simula efectos no-lineales
+ */
 class FiltroKalmanCuantico {
 public:
     FiltroKalmanCuantico(float _q = 0.01, float _r = 0.1) 
         : q(_q), r(_r), x(0), p(1) {}
     
-    float filtrar(float medida) {
-        // Predicción
+    inline float filtrar(float medida) {
         float p_temp = p + q;
-        
-        // Actualización con término no lineal (simulando efecto cuántico)
         float k = p_temp / (p_temp + r);
-        x = x + k * (medida - x) + k * 0.01 * sin(medida * 0.1);
-        p = (1 - k) * p_temp;
+        
+        // Término no-lineal para capturar patrones complejos
+        float termino_nolineal = k * 0.01f * sin(medida * 0.1f);
+        
+        x += k * (medida - x) + termino_nolineal;
+        p = (1.0f - k) * p_temp;
         
         return x;
     }
 
 private:
-    float q; // Varianza del proceso
-    float r; // Varianza de la medición
-    float x; // Valor estimado
-    float p; // Covarianza de la estimación
+    float q, r, x, p;
 };
 
-// Instancias de filtros
-FiltroKalman filtroPresion(0.5, 0.1);           // Para filtrar presión
-FiltroKalmanGauss filtroO2(20.93, 0.5);         // Para filtrar O2
-KalmanFilter filtroCO2(0.01, 0.1, 400.0);       // Para filtrar CO2
-MaxwellBoltzmannFilter filtroGasResp;           // Para filtrar gases respiratorios
-FiltroKalman filtroVolumen(1.0, 0.2);           // Para filtrar volumen
-FiltroKalman filtroVO2(0.04, 0.9);              // Para filtrar VO2
+// ============================================================================
+// INSTANCIAS DE FILTROS OPTIMIZADAS CON PARÁMETROS CALIBRADOS
+// ============================================================================
+
+/**
+ * Configuración de filtros para diferentes señales del sistema VO2Smart:
+ * 
+ * Parámetros de ajuste:
+ * - q (ruido proceso): Mayor valor = más responsivo, menor = más estable
+ * - r (ruido medición): Mayor valor = menos confianza en sensores
+ * - alpha: Factor de suavizado para filtros exponenciales (0-1)
+ */
+
+// Filtro para presión diferencial del Venturi (señal ruidosa, necesita estabilidad)
+FiltroKalman filtroPresion(0.5, 0.1);  // q=0.5 para respuesta rápida a cambios reales
+                                       // r=0.1 para filtrar ruido del sensor
+
+// Filtro para sensor de O2 (inicializado con valor ambiente típico)
+FiltroKalmanGauss filtroO2(20.93, 0.5); // Valor inicial: 20.93% (aire ambiente)
+                                         // q=0.5 para balance respuesta/estabilidad
+
+// Filtro para sensor de CO2 (inicializado con valor ambiente)
+KalmanFilter filtroCO2(0.01, 0.1, 400.0); // q=0.01 para suavizado agresivo
+                                           // Valor inicial: 400 ppm (ambiente típico)
+
+// Filtro exponencial para gases respiratorios (procesamiento eficiente)
+MaxwellBoltzmannFilter filtroGasResp(0.1); // Alpha=0.1 para suavizado moderado
+
+// Filtro para cálculos de volumen (balancear precisión y estabilidad)
+FiltroKalman filtroVolumen(1.0, 0.2);  // q=1.0 para seguir cambios volumétricos
+                                       // r=0.2 para filtrar cálculos ruidosos
+
+// Filtro para VO2 (parámetros específicos para mediciones metabólicas)
+FiltroKalman filtroVO2(0.04, 0.9);     // q=0.04 para estabilidad en mediciones lentas
+                                       // r=0.9 para priorizar estabilidad sobre rapidez
 
 // Fix TOUCH_CS warning
 #define TOUCH_CS -1 // Disable touch functionality if not used
@@ -314,6 +427,34 @@ struct
     bool co2_on = false;          // CO2 sensor active
 } settings;
 
+// Estructura para logging centralizado de errores
+struct ErrorLogEntry {
+    unsigned long timestamp;      // Timestamp del error
+    char sensorName[16];         // Nombre del sensor
+    float value;                 // Valor que causó el error
+    char reason[32];             // Razón del error
+};
+
+// Sistema de logging de errores
+struct ErrorLogger {
+    ErrorLogEntry entries[MAX_ERROR_LOG_ENTRIES];
+    int currentIndex;
+    int totalErrors;
+    bool initialized;
+} errorLog;
+
+// Contadores de errores por sensor para manejo inteligente
+struct SensorErrorCounters {
+    int o2Errors;
+    int co2Errors;
+    int pressureErrors;
+    int temperatureErrors;
+    unsigned long lastO2ErrorTime;
+    unsigned long lastCO2ErrorTime;
+    unsigned long lastPressureErrorTime;
+    unsigned long lastTempErrorTime;
+} sensorErrors;
+
 float TimerVolCalc = 0.0;
 float Timer5s = 0.0;
 float Timer1min = 0.0;
@@ -363,6 +504,31 @@ float Battery_Voltage = 0.0;
 #define CALIB_TIMEOUT_MS 60000     // Tiempo máximo para la calibración (1 minuto)
 #define CALIB_UPDATE_INTERVAL_MS 100 // Intervalo de actualización (100 ms)
 #define CALIB_ALLOWED_ERROR 3.0    // Error permitido (3%)
+
+// Constantes para validación de sensores y rangos fisiológicos
+#define O2_MIN_VALID 8.0           // Mínimo O2% válido (hipoxia severa)
+#define O2_MAX_VALID 25.0          // Máximo O2% válido (hiperoxia)
+#define O2_AMBIENT_TYPICAL 20.93   // O2% típico del aire ambiente
+#define CO2_MIN_VALID 200.0        // Mínimo CO2 ppm válido
+#define CO2_MAX_VALID 50000.0      // Máximo CO2 ppm válido (5%)
+#define CO2_AMBIENT_TYPICAL 400.0  // CO2 ppm típico del aire ambiente
+#define PRESSURE_MIN_VALID -50.0   // Mínima presión diferencial válida (Pa)
+#define PRESSURE_MAX_VALID 5000.0  // Máxima presión diferencial válida (Pa)
+#define TEMP_MIN_VALID -10.0       // Mínima temperatura válida (°C)
+#define TEMP_MAX_VALID 60.0        // Máxima temperatura válida (°C)
+#define VO2_MIN_PHYSIOLOGICAL 3.0  // Mínimo VO2/kg fisiológico (ml/kg/min)
+#define VO2_MAX_PHYSIOLOGICAL 100.0 // Máximo VO2/kg fisiológico (ml/kg/min)
+#define ATMOSPHERIC_PRESSURE_MIN 85000  // Presión atmosférica mínima (Pa) - ~850 mbar
+#define ATMOSPHERIC_PRESSURE_MAX 108000 // Presión atmosférica máxima (Pa) - ~1080 mbar
+
+// Constantes para sistema de errores centralizado
+#define MAX_ERROR_LOG_ENTRIES 20   // Máximo número de errores almacenados
+#define ERROR_DISPLAY_DURATION 2000 // Duración de visualización de errores (ms)
+#define SENSOR_ERROR_THRESHOLD 5   // Errores consecutivos antes de desactivar sensor
+
+// Constantes para integridad EEPROM
+#define EEPROM_CHECKSUM_OFFSET (sizeof(settings)) // Posición del checksum
+#define EEPROM_MAGIC_WORD 0xDEADBEEF              // Palabra mágica para validación
 
 // Demo mode variables
 #define DEMO_SCREEN_DURATION 10000  // 10 segundos por pantalla
@@ -822,18 +988,376 @@ void drawDemoScreen(int screenNum) {
 //                  MAIN PROGRAM
 //----------------------------------------------------------------------------------------------------------
 
+// ============================================================================
+// SISTEMA DE VALIDACIÓN DE DATOS Y MANEJO CENTRALIZADO DE ERRORES
+// ============================================================================
+
+/**
+ * Inicializa el sistema de logging de errores
+ * Debe llamarse una vez al inicio del programa
+ */
+void initializeErrorLogging() {
+    if (errorLogMutex == NULL) {
+        errorLogMutex = xSemaphoreCreateMutex();
+    }
+    
+    if (xSemaphoreTake(errorLogMutex, pdMS_TO_TICKS(100))) {
+        errorLog.currentIndex = 0;
+        errorLog.totalErrors = 0;
+        errorLog.initialized = true;
+        
+        // Inicializar contadores de errores por sensor
+        memset(&sensorErrors, 0, sizeof(sensorErrors));
+        
+        Serial.println("Sistema de logging de errores inicializado");
+        xSemaphoreGive(errorLogMutex);
+    }
+}
+
+/**
+ * Registra un error de sensor en el log centralizado
+ * @param sensorName Nombre del sensor que generó el error
+ * @param value Valor que causó el error
+ * @param reason Descripción del motivo del error
+ */
+void logSensorError(const char* sensorName, float value, const char* reason) {
+    if (!errorLog.initialized || errorLogMutex == NULL) return;
+    
+    if (xSemaphoreTake(errorLogMutex, pdMS_TO_TICKS(50))) {
+        ErrorLogEntry* entry = &errorLog.entries[errorLog.currentIndex];
+        
+        entry->timestamp = millis();
+        strncpy(entry->sensorName, sensorName, sizeof(entry->sensorName) - 1);
+        entry->sensorName[sizeof(entry->sensorName) - 1] = '\0';
+        entry->value = value;
+        strncpy(entry->reason, reason, sizeof(entry->reason) - 1);
+        entry->reason[sizeof(entry->reason) - 1] = '\0';
+        
+        errorLog.currentIndex = (errorLog.currentIndex + 1) % MAX_ERROR_LOG_ENTRIES;
+        errorLog.totalErrors++;
+        
+        // Log detallado por serial para depuración
+        Serial.printf("[ERROR] %s: %.2f - %s (Total errores: %d)\n", 
+                     sensorName, value, reason, errorLog.totalErrors);
+        
+        xSemaphoreGive(errorLogMutex);
+    }
+}
+
+/**
+ * Valida si un valor de sensor está dentro de rangos aceptables
+ * @param value Valor a validar
+ * @param min Valor mínimo aceptable
+ * @param max Valor máximo aceptable
+ * @param sensorName Nombre del sensor para logging
+ * @return true si el valor es válido, false en caso contrario
+ */
+bool validateSensorData(float value, float min, float max, const char* sensorName) {
+    // Verificar si el valor es NaN o infinito
+    if (isnan(value) || isinf(value)) {
+        logSensorError(sensorName, value, "Valor NaN/Infinito");
+        return false;
+    }
+    
+    // Verificar rango válido
+    if (value < min || value > max) {
+        char reason[64];
+        snprintf(reason, sizeof(reason), "Fuera de rango [%.2f, %.2f]", min, max);
+        logSensorError(sensorName, value, reason);
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Valida específicamente lecturas de oxígeno con lógica contextual
+ * @param o2Value Porcentaje de O2 medido
+ * @return true si la lectura es válida y confiable
+ */
+bool isValidO2Reading(float o2Value) {
+    if (!validateSensorData(o2Value, O2_MIN_VALID, O2_MAX_VALID, "O2")) {
+        return false;
+    }
+    
+    // Verificación adicional: el O2 no debería estar demasiado lejos del ambiente
+    // a menos que estemos en una medición activa
+    static float lastValidO2 = O2_AMBIENT_TYPICAL;
+    float deviation = fabs(o2Value - lastValidO2);
+    
+    // Permitir cambios graduales mayores durante mediciones activas
+    if (deviation > 5.0 && TotalTime < 10000) { // Primeros 10 segundos más estrictos
+        char reason[64];
+        snprintf(reason, sizeof(reason), "Cambio abrupto: %.2f%% (anterior: %.2f%%)", 
+                o2Value, lastValidO2);
+        logSensorError("O2", o2Value, reason);
+        return false;
+    }
+    
+    lastValidO2 = o2Value;
+    return true;
+}
+
+/**
+ * Valida lecturas de CO2 con consideraciones fisiológicas
+ * @param co2Value Concentración de CO2 en ppm
+ * @return true si la lectura es válida
+ */
+bool isValidCO2Reading(float co2Value) {
+    if (!validateSensorData(co2Value, CO2_MIN_VALID, CO2_MAX_VALID, "CO2")) {
+        return false;
+    }
+    
+    // Verificación de seguridad: niveles peligrosos de CO2
+    if (co2Value > 40000) { // 4% CO2 es peligroso
+        logSensorError("CO2", co2Value, "Nivel peligroso detectado");
+        showError("CO2 PELIGROSO!", true);
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Valida lecturas de presión diferencial con filtrado de ruido
+ * @param pressure Presión diferencial en Pa
+ * @return true si la lectura es válida
+ */
+bool isValidPressureReading(float pressure) {
+    if (!validateSensorData(pressure, PRESSURE_MIN_VALID, PRESSURE_MAX_VALID, "Presion")) {
+        return false;
+    }
+    
+    // Filtro adicional: presiones muy pequeñas pueden ser ruido
+    static int consecutiveNoiseReadings = 0;
+    if (fabs(pressure) < 0.1 && TotalTime > 5000) { // Después de 5s de operación
+        consecutiveNoiseReadings++;
+        if (consecutiveNoiseReadings > 10) {
+            logSensorError("Presion", pressure, "Posible ruido del sensor");
+            consecutiveNoiseReadings = 0; // Reset para evitar spam
+        }
+    } else {
+        consecutiveNoiseReadings = 0;
+    }
+    
+    return true;
+}
+
+/**
+ * Valida lecturas de temperatura ambiente
+ * @param temperature Temperatura en grados Celsius
+ * @return true si la lectura es válida
+ */
+bool isValidTemperatureReading(float temperature) {
+    if (!validateSensorData(temperature, TEMP_MIN_VALID, TEMP_MAX_VALID, "Temperatura")) {
+        return false;
+    }
+    
+    // Verificación de estabilidad: la temperatura no debería cambiar abruptamente
+    static float lastValidTemp = 20.0; // Temperatura inicial razonable
+    float tempChange = fabs(temperature - lastValidTemp);
+    
+    if (tempChange > 10.0) { // Cambio de más de 10°C es sospechoso
+        char reason[64];
+        snprintf(reason, sizeof(reason), "Cambio abrupto: %.1f°C (anterior: %.1f°C)", 
+                temperature, lastValidTemp);
+        logSensorError("Temperatura", temperature, reason);
+        return false;
+    }
+    
+    lastValidTemp = temperature;
+    return true;
+}
+
+// ============================================================================
+// SISTEMA DE INTEGRIDAD EEPROM CON CHECKSUM
+// ============================================================================
+
+/**
+ * Calcula el checksum CRC32 de un bloque de datos
+ * @param data Puntero a los datos
+ * @param size Tamaño en bytes
+ * @return Checksum CRC32
+ */
+uint32_t calculateEEPROMChecksum(void* data, size_t size) {
+    uint32_t crc = 0xFFFFFFFF;
+    uint8_t* bytes = (uint8_t*)data;
+    
+    for (size_t i = 0; i < size; i++) {
+        crc ^= bytes[i];
+        for (int j = 0; j < 8; j++) {
+            if (crc & 1) {
+                crc = (crc >> 1) ^ 0xEDB88320; // Polinomio CRC32
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    
+    return ~crc;
+}
+
+/**
+ * Verifica la integridad de los datos almacenados en EEPROM
+ * @return true si los datos son íntegros, false si están corruptos
+ */
+bool verifyEEPROMIntegrity() {
+    uint32_t storedChecksum;
+    uint32_t calculatedChecksum;
+    
+    // Leer el checksum almacenado
+    EEPROM.get(EEPROM_CHECKSUM_OFFSET, storedChecksum);
+    
+    // Calcular el checksum de los datos actuales
+    calculatedChecksum = calculateEEPROMChecksum(&settings, sizeof(settings));
+    
+    bool isValid = (storedChecksum == calculatedChecksum);
+    
+    if (!isValid) {
+        Serial.printf("Error de integridad EEPROM: stored=0x%08X, calculated=0x%08X\n", 
+                     storedChecksum, calculatedChecksum);
+        logSensorError("EEPROM", storedChecksum, "Checksum inválido");
+    }
+    
+    return isValid;
+}
+
+/**
+ * Guarda la configuración en EEPROM con verificación de integridad
+ */
+void saveSettingsWithChecksum() {
+    if (settingsMutex == NULL) {
+        settingsMutex = xSemaphoreCreateMutex();
+    }
+    
+    if (xSemaphoreTake(settingsMutex, pdMS_TO_TICKS(100))) {
+        // Calcular y almacenar checksum
+        uint32_t checksum = calculateEEPROMChecksum(&settings, sizeof(settings));
+        
+        // Escribir configuración
+        for (int i = 0; i < sizeof(settings); ++i) {
+            EEPROM.write(i, ((byte *)&settings)[i]);
+        }
+        
+        // Escribir checksum
+        EEPROM.put(EEPROM_CHECKSUM_OFFSET, checksum);
+        
+        // Confirmar escritura
+        if (EEPROM.commit()) {
+            Serial.println("Configuración guardada con checksum exitosamente");
+        } else {
+            logSensorError("EEPROM", 0, "Fallo al confirmar escritura");
+        }
+        
+        xSemaphoreGive(settingsMutex);
+    }
+}
+
+/**
+ * Carga la configuración desde EEPROM con verificación de integridad
+ * @return true si la carga fue exitosa, false si hubo errores
+ */
+bool loadSettingsWithChecksum() {
+    if (settingsMutex == NULL) {
+        settingsMutex = xSemaphoreCreateMutex();
+    }
+    
+    bool success = false;
+    
+    if (xSemaphoreTake(settingsMutex, pdMS_TO_TICKS(100))) {
+        // Verificar integridad primero
+        if (verifyEEPROMIntegrity()) {
+            // Cargar datos si son válidos
+            for (int i = 0; i < sizeof(settings); ++i) {
+                ((byte *)&settings)[i] = EEPROM.read(i);
+            }
+            
+            // Verificar versión de configuración
+            if (settings.version == 1) {
+                Serial.println("Configuración cargada exitosamente");
+                success = true;
+            } else {
+                logSensorError("EEPROM", settings.version, "Versión incompatible");
+            }
+        } else {
+            // Usar valores por defecto si hay corrupción
+            Serial.println("Usando configuración por defecto debido a corrupción EEPROM");
+            // Los valores por defecto ya están definidos en la declaración de settings
+            saveSettingsWithChecksum(); // Guardar defaults limpios
+        }
+        
+        xSemaphoreGive(settingsMutex);
+    }
+    
+    return success;
+}
+
+// ============================================================================
+// FUNCIONES OPTIMIZADAS CON PROTECCIÓN MUTEX Y VALIDACIÓN
+// ============================================================================
+
 // Function to display the main menu
 // Removed duplicate definition of showMainMenu()
 
 // Modificar la parte de setup() que inicializa el modo DEMO
+/**
+ * Configuración inicial del sistema VO2Smart
+ * Inicializa hardware, sensores, sistema de errores y mutex
+ */
 void setup() {
+    // Inicialización básica del sistema
     Serial.begin(115200);
+    while (!Serial && millis() < 3000) { // Esperar Serial por max 3 segundos
+        delay(10);
+    }
+    Serial.println("VO2Smart - Iniciando sistema...");
+    
+    // Inicializar EEPROM para configuración persistente
+    EEPROM.begin(512); // 512 bytes deberían ser suficientes
+    
+    // Inicializar sistema de mutex para thread safety
+    sensorDataMutex = xSemaphoreCreateMutex();
+    settingsMutex = xSemaphoreCreateMutex();
+    errorLogMutex = xSemaphoreCreateMutex();
+    calculationMutex = xSemaphoreCreateMutex();
+    
+    if (sensorDataMutex == NULL || settingsMutex == NULL || 
+        errorLogMutex == NULL || calculationMutex == NULL) {
+        Serial.println("ERROR: Fallo al crear mutex del sistema");
+        // Continuar sin mutex - funcionalidad reducida pero operativa
+    } else {
+        Serial.println("Sistema de mutex inicializado correctamente");
+    }
+    
+    // Inicializar sistema de logging de errores
+    initializeErrorLogging();
+    
+    // Configurar pines de entrada
     pinMode(buttonPin1, INPUT_PULLUP);
     pinMode(buttonPin2, INPUT_PULLUP);
+    
+    // Inicializar pantalla TFT
     tft.init();
     tft.setRotation(1);
+    
+    // Cargar configuración desde EEPROM con verificación de integridad
+    Serial.println("Cargando configuración desde EEPROM...");
+    if (loadSettingsWithChecksum()) {
+        Serial.printf("Configuración cargada: peso=%.1fkg, corrección=%.3f\n", 
+                     settings.weightkg, settings.correctionSensor);
+    } else {
+        Serial.println("Usando configuración por defecto");
+    }
+    
+    // Mostrar pantalla de inicio
     showSplashScreen();
-    showCarouselMenu(); // Solo aquí, no en loop()
+    
+    // Log del estado inicial del sistema
+    Serial.printf("Sistema inicializado - Memoria libre: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("Versión de configuración: %d\n", settings.version);
+    
+    // Mostrar menú principal
+    showCarouselMenu();
 }
 
 void loop() {
@@ -1408,37 +1932,205 @@ void calibrateFlowSensor() {
     }
 }
 
+/**
+ * Cálculo optimizado de volumen respiratorio usando tubo Venturi
+ * Implementa la ecuación de Bernoulli con correcciones de densidad
+ * 
+ * Ecuación base del Venturi:
+ * Q = A₂ × √(2ΔP / ρ × (1/(A₂/A₁)² - 1))
+ * Donde:
+ * - Q: Flujo volumétrico (m³/s)
+ * - A₁, A₂: Áreas de entrada y garganta del Venturi
+ * - ΔP: Presión diferencial medida
+ * - ρ: Densidad del aire
+ */
 void VolumeCalc() {
+    static unsigned long lastValidReading = 0;
+    static float lastValidPressure = 0;
+    
+    // Protección con mutex para datos compartidos
+    if (sensorDataMutex == NULL) {
+        sensorDataMutex = xSemaphoreCreateMutex();
+    }
+    
+    if (!xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(50))) {
+        logSensorError("VolumeCalc", 0, "Timeout mutex volumen");
+        return;
+    }
+    
+    // Leer presión diferencial del sensor Omron
     float pressureraw = mySensor.getPressure();
-    pressure = pressure / 2 + pressureraw / 2;
-    if (isnan(pressure)) return;
+    
+    // Validar lectura del sensor
+    if (!isValidPressureReading(pressureraw)) {
+        sensorErrors.pressureErrors++;
+        sensorErrors.lastPressureErrorTime = millis();
+        
+        // Usar último valor válido si es reciente (< 2 segundos)
+        if (millis() - lastValidReading < 2000) {
+            pressureraw = lastValidPressure;
+            Serial.println("Usando última presión válida por error de sensor");
+        } else {
+            // Asumir flujo cero si no hay lecturas válidas recientes
+            pressureraw = 0;
+        }
+    } else {
+        lastValidReading = millis();
+        lastValidPressure = pressureraw;
+    }
+    
+    // Aplicar filtro de promedio móvil para suavizar fluctuaciones
+    pressure = (pressure * 0.5) + (pressureraw * 0.5);
+    
+    // Asegurar que la presión no sea negativa (físicamente imposible en este contexto)
     if (pressure < 0) pressure = 0;
+    
+    // ============================================================================
+    // DETECCIÓN Y PROCESAMIENTO DE CICLOS RESPIRATORIOS
+    // ============================================================================
+    
+    /**
+     * Lógica de detección de expiración:
+     * - Cuando la presión cae por debajo del umbral después de haber estado alta
+     * - Se considera el final de una espiración
+     */
     if (pressure < pressThreshold && readVE == 1) {
+        // Fin de espiración detectado
         readVE = 0;
         DurationVE = millis() - TimerVE;
         TimerVE = millis();
+        
+        // Calcular volumen espiratorio individual
         volumeExp = volumeTotal;
-        volumeTotal = 0;
-        volumeVE = volumeExp / DurationVE * 60;
-        volumeExp = volumeExp / 1000;
-        volumeVEmean = (volumeVEmean * 3 / 4) + (volumeVE / 4);
-        if (volumeVEmean < 1) volumeVEmean = 0;
-        freqVE = 60000 / DurationVE;
-        if (volumeVE < 0.1) freqVE = 0;
-        freqVEmean = (freqVEmean * 3 / 4) + (freqVE / 4);
-        if (freqVEmean < 1) freqVEmean = 0;
+        volumeTotal = 0; // Reset para próximo ciclo
+        
+        // Validar duración del ciclo respiratorio (150ms - 10s son fisiológicos)
+        if (DurationVE > 150 && DurationVE < 10000) {
+            // Calcular ventilación por minuto
+            volumeVE = (volumeExp / 1000.0) * (60000.0 / DurationVE); // L/min
+            
+            // Aplicar filtro de promedio móvil ponderado para VE
+            volumeVEmean = (volumeVEmean * 0.75) + (volumeVE * 0.25);
+            
+            // Validar y limitar VE a rangos fisiológicos
+            if (volumeVEmean < 0.5) volumeVEmean = 0; // Eliminar ruido
+            if (volumeVEmean > 200.0) { // Límite superior fisiológico
+                logSensorError("VE", volumeVEmean, "Ventilación excesiva");
+                volumeVEmean = 200.0;
+            }
+            
+            // Calcular frecuencia respiratoria
+            freqVE = 60000.0 / DurationVE; // respiraciones por minuto
+            
+            // Validar frecuencia respiratoria (5-60 rpm son normales)
+            if (freqVE >= 5.0 && freqVE <= 60.0) {
+                freqVEmean = (freqVEmean * 0.75) + (freqVE * 0.25);
+            } else {
+                logSensorError("FreqResp", freqVE, "Frecuencia respiratoria anormal");
+            }
+        } else {
+            // Duración de ciclo anormal - posible ruido
+            logSensorError("CicloResp", DurationVE, "Duración ciclo anormal");
+        }
+        
+        // Convertir volumen espiratorio a litros para display
+        volumeExp = volumeExp / 1000.0;
+        
+        // Log detallado cada 10 respiraciones para monitoreo
+        static int breathCount = 0;
+        if (++breathCount >= 10 && VERBOSE) {
+            Serial.printf("Resp: VE=%.1f L/min, Freq=%.1f rpm, Vol=%.3f L\n", 
+                         volumeVEmean, freqVEmean, volumeExp);
+            breathCount = 0;
+        }
     }
-    if (millis() - TimerVE > 5000) readVE = 1;
+    
+    // Reset automático si pasa mucho tiempo sin respiración detectada
+    if (millis() - TimerVE > 5000) {
+        readVE = 1; // Permitir nueva detección
+        if (volumeVEmean > 1.0) {
+            // Degradar gradualmente VE si no hay actividad
+            volumeVEmean *= 0.95;
+            freqVEmean *= 0.95;
+        }
+    }
+    
+    // ============================================================================
+    // CÁLCULO DE FLUJO USANDO ECUACIÓN DE VENTURI
+    // ============================================================================
+    
     if (pressure >= pressThreshold) {
-        massFlow = 1000 * sqrt((abs(pressure) * 2 * rho) / ((1 / (pow(area_2, 2))) - (1 / (pow(area_1, 2)))));
+        /**
+         * Ecuación de Bernoulli aplicada al Venturi:
+         * 
+         * Q = Cd × A₂ × √(2ΔP / ρ × (1 - (A₂/A₁)²))
+         * 
+         * Simplificada para nuestro Venturi específico:
+         * massFlow = 1000 × √(2ΔP × ρ / (1/A₂² - 1/A₁²))
+         * 
+         * Factor 1000: conversión de m³/s a L/s
+         */
+        
+        // Verificar que la densidad del aire sea válida
+        if (rho <= 0 || rho > 2.0) {
+            logSensorError("Densidad", rho, "Densidad aire inválida");
+            rho = 1.225; // Usar densidad estándar del aire
+        }
+        
+        // Calcular flujo másico usando ecuación de Venturi
+        float denominatorVenturi = (1.0 / pow(area_2, 2)) - (1.0 / pow(area_1, 2));
+        if (denominatorVenturi <= 0) {
+            logSensorError("Venturi", denominatorVenturi, "Error configuración áreas");
+            xSemaphoreGive(sensorDataMutex);
+            return;
+        }
+        
+        massFlow = 1000.0 * sqrt((abs(pressure) * 2.0 * rho) / denominatorVenturi);
+        
+        // Convertir flujo másico a volumétrico
         volFlow = massFlow / rho;
+        
+        // Aplicar factor de corrección de calibración
         volFlow = volFlow * settings.correctionSensor;
-        volumeTotal = volFlow * (millis() - TimerVolCalc) + volumeTotal;
-        volumeTotal2 = volFlow * (millis() - TimerVolCalc) + volumeTotal2;
-    } else if ((volumeTotal2 - volumeTotalOld) > 200) {
-        expiratVol = (volumeTotal2 - volumeTotalOld) / 1000;
-        volumeTotalOld = volumeTotal2;
+        
+        // Validar flujo calculado
+        if (volFlow < 0 || volFlow > 15.0) { // 15 L/s es un límite superior razonable
+            logSensorError("Flujo", volFlow, "Flujo calculado fuera de rango");
+            volFlow = constrain(volFlow, 0, 15.0);
+        }
+        
+        // Integrar volumen usando tiempo transcurrido
+        float deltaTime = millis() - TimerVolCalc;
+        if (deltaTime > 0 && deltaTime < 1000) { // Validar delta tiempo razonable
+            float volumeIncrement = volFlow * (deltaTime / 1000.0); // L/s × s = L
+            
+            volumeTotal += volumeIncrement;
+            volumeTotal2 += volumeIncrement;
+            
+            // Limitar acumulación para evitar overflow
+            if (volumeTotal > 50.0) { // 50L es un volumen muy alto por respiración
+                logSensorError("VolTotal", volumeTotal, "Volumen acumulado excesivo");
+                volumeTotal = 50.0;
+            }
+        }
     }
+    
+    // Actualizar timer para próxima iteración
+    TimerVolCalc = millis();
+    
+    // Detectar volúmenes espiratorios grandes para análisis
+    if ((volumeTotal2 - volumeTotalOld) > 0.2) { // 200ml es significativo
+        expiratVol = (volumeTotal2 - volumeTotalOld); // Ya en litros
+        volumeTotalOld = volumeTotal2;
+        
+        // Validar volumen espiratorio individual
+        if (expiratVol > 8.0) { // 8L es extremadamente alto
+            logSensorError("VolEspiratorio", expiratVol, "Volumen espiratorio excesivo");
+            expiratVol = constrain(expiratVol, 0, 8.0);
+        }
+    }
+    
+    xSemaphoreGive(sensorDataMutex);
 }
 
 void handleBLEConnection() {
@@ -1686,84 +2378,377 @@ void tftParameters() {
     drawBatteryIndicator();
 }
 
+/**
+ * Lectura mejorada del sensor de CO2 con validación y recuperación
+ * Implementa detección de condiciones peligrosas y filtrado adaptativo
+ */
 void readCO2() {
     static int errorCount = 0;
+    static unsigned long lastSuccessfulReading = 0;
+    
+    // Verificar si el sensor está habilitado
     if (!settings.co2_on) return;
-    float result[3] = {0};
-    scd30.getCarbonDioxideConcentration(result);
-    if (result[0] < 300 || result[0] > 50000) {
-        errorCount++;
-        if (errorCount > 3) {
-            settings.co2_on = false;
-            Serial.println("Desactivando CO2 por lecturas inválidas");
+    
+    // Protección con mutex
+    if (sensorDataMutex == NULL) {
+        sensorDataMutex = xSemaphoreCreateMutex();
+    }
+    
+    if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(50))) {
+        float result[3] = {0}; // [CO2, Temperatura, Humedad]
+        
+        // Intentar lectura del sensor SCD30
+        if (!scd30.getCarbonDioxideConcentration(result)) {
+            errorCount++;
+            sensorErrors.co2Errors++;
+            sensorErrors.lastCO2ErrorTime = millis();
+            
+            logSensorError("CO2", 0, "Fallo comunicación SCD30");
+            
+            if (errorCount > SENSOR_ERROR_THRESHOLD) {
+                settings.co2_on = false;
+                showError("CO2 sensor desactivado", false);
+                Serial.println("Desactivando CO2 por fallos repetidos");
+            }
+            
+            xSemaphoreGive(sensorDataMutex);
+            return;
         }
-        return;
+        
+        // Validar cada componente de la lectura
+        if (!isValidCO2Reading(result[0]) || 
+            !isValidTemperatureReading(result[1]) ||
+            isnan(result[2])) {
+            
+            errorCount++;
+            
+            // Usar último valor válido si está disponible y es reciente
+            if (millis() - lastSuccessfulReading < 10000) { // 10 segundos
+                Serial.printf("Usando último CO2 válido: %.0f ppm (errores: %d)\n", 
+                             co2ppm, errorCount);
+            } else {
+                // Degradar hacia valor ambiente
+                co2ppm = co2ppm * 0.95 + CO2_AMBIENT_TYPICAL * 0.05;
+                logSensorError("CO2", co2ppm, "Degradando hacia valor ambiente");
+            }
+            
+            xSemaphoreGive(sensorDataMutex);
+            return;
+        }
+        
+        // Lecturas válidas: procesar datos
+        errorCount = 0;
+        lastSuccessfulReading = millis();
+        
+        // Aplicar filtro Kalman adaptativo para CO2
+        float filteredCO2 = filtroCO2.filtrar(result[0]);
+        
+        // Verificación de seguridad crítica para CO2
+        if (filteredCO2 >= 40000) { // 4% es peligroso
+            showError("CO2 LIMITE CRITICO!", true);
+            logSensorError("CO2", filteredCO2, "Nivel crítico detectado");
+            
+            // En modo real, podríamos activar alarmas adicionales aquí
+            tft.setTextColor(TFT_WHITE, TFT_RED);
+            tft.drawCentreString("VENTILE AREA!", 120, 100, 4);
+        }
+        
+        // Actualizar valores globales
+        co2ppm = filteredCO2;
+        
+        // Establecer valor inicial si es la primera lectura válida
+        if (initialCO2 == 0) {
+            initialCO2 = co2ppm;
+        }
+        
+        // Convertir a porcentaje (ppm/10000)
+        co2perc = co2ppm / 10000.0;
+        
+        // Actualizar temperatura y humedad del sensor CO2
+        co2temp = result[1];
+        co2hum = result[2];
+        
+        // Modo demo: usar valores simulados
+        if (DEMO) {
+            co2ppm = 30000; // Valor fijo para demo
+            co2perc = 3.0;  // 3% para demo
+        }
+        
+        xSemaphoreGive(sensorDataMutex);
+        
+        // Log periódico para monitoreo (cada 30 segundos)
+        static unsigned long lastLogTime = 0;
+        if (millis() - lastLogTime > 30000) {
+            Serial.printf("CO2: %.0f ppm (%.1f%%), Temp: %.1f°C, Hum: %.0f%%\n", 
+                         co2ppm, co2perc * 100, co2temp, co2hum);
+            lastLogTime = millis();
+        }
+        
+    } else {
+        logSensorError("CO2", 0, "Timeout mutex - lectura omitida");
     }
-    errorCount = 0;
-    co2ppm = filtroCO2.filtrar(result[0]); // Cambiado update -> filtrar
-    if (co2ppm >= 40000) {
-        tft.setTextColor(TFT_WHITE, TFT_RED);
-        tft.drawCentreString("CO2 LIMITE!", 120, 55, 4);
-    }
-    if (DEMO) co2ppm = 30000;
-    if (initialCO2 == 0) initialCO2 = co2ppm;
-    co2perc = co2ppm / 10000;
-    co2temp = result[1];
-    co2hum = result[2];
 }
 
+/**
+ * Lectura mejorada del sensor de oxígeno con validación robusta
+ * Implementa filtrado Kalman, detección de errores y recuperación automática
+ */
 void ReadO2() {
     static int errorCount = 0;
-    float oxygenData = Oxygen.ReadOxygenData(COLLECT_NUMBER);
-    if (oxygenData < 10.0 || oxygenData > 25.0) {
-        errorCount++;
-        Serial.print("Lectura O2 fuera de rango: ");
-        Serial.println(oxygenData);
-        if (errorCount > 5) {
-            if (!Oxygen.begin(Oxygen_IICAddress)) {
-                Serial.println("Fallo al reinicializar sensor O2");
-                return;
-            }
-            errorCount = 0;
-        }
-        return;
+    static unsigned long lastSuccessfulReading = 0;
+    
+    // Protección con mutex para acceso a datos compartidos
+    if (sensorDataMutex == NULL) {
+        sensorDataMutex = xSemaphoreCreateMutex();
     }
-    errorCount = 0;
-    oxygenData = filtroO2.filtrar(oxygenData);
-    lastO2 = oxygenData;
-    if (lastO2 > initialO2) initialO2 = lastO2;
-    if (DEMO) lastO2 = initialO2 - 4;
-    co2 = initialO2 - lastO2;
+    
+    if (xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(50))) {
+        float oxygenData = Oxygen.ReadOxygenData(COLLECT_NUMBER);
+        
+        // Validación robusta con función específica para O2
+        if (!isValidO2Reading(oxygenData)) {
+            errorCount++;
+            sensorErrors.o2Errors++;
+            sensorErrors.lastO2ErrorTime = millis();
+            
+            // Estrategia de recuperación progresiva
+            if (errorCount > SENSOR_ERROR_THRESHOLD) {
+                // Intentar reinicialización del sensor
+                if (!Oxygen.begin(Oxygen_IICAddress)) {
+                    logSensorError("O2", oxygenData, "Fallo reinicialización sensor");
+                    
+                    // Usar último valor válido con degradación temporal
+                    if (millis() - lastSuccessfulReading < 30000) { // 30 segundos
+                        // Mantener último valor válido
+                        Serial.println("Usando último valor O2 válido por fallo sensor");
+                    } else {
+                        // Usar valor por defecto seguro después de 30s
+                        lastO2 = O2_AMBIENT_TYPICAL;
+                        logSensorError("O2", lastO2, "Usando valor por defecto por fallo prolongado");
+                    }
+                    
+                    xSemaphoreGive(sensorDataMutex);
+                    return;
+                }
+                errorCount = 0; // Reset si la reinicialización fue exitosa
+            } else {
+                // Para errores menores, usar interpolación con último valor válido
+                if (millis() - lastSuccessfulReading < 5000) { // 5 segundos
+                    // Mantener último valor válido temporalmente
+                    Serial.printf("Manteniendo último O2 válido: %.2f%% (errores: %d)\n", 
+                                 lastO2, errorCount);
+                } else {
+                    // Degradar hacia valor ambiente gradualmente
+                    lastO2 = lastO2 * 0.9 + O2_AMBIENT_TYPICAL * 0.1;
+                }
+            }
+            
+            xSemaphoreGive(sensorDataMutex);
+            return;
+        }
+        
+        // Lectura válida: aplicar filtro Kalman optimizado
+        errorCount = 0;
+        lastSuccessfulReading = millis();
+        
+        // Filtro Kalman con parámetros adaptativos según condiciones
+        float filteredO2;
+        if (TotalTime < 10000) {
+            // Filtrado más agresivo durante los primeros 10 segundos (inicialización)
+            static FiltroKalman filtroO2Init(0.8, 0.2);
+            filteredO2 = filtroO2Init.filtrar(oxygenData);
+        } else {
+            // Filtrado normal durante operación
+            filteredO2 = filtroO2.filtrar(oxygenData);
+        }
+        
+        // Actualizar valores globales con protección
+        lastO2 = filteredO2;
+        
+        // Actualizar O2 inicial si es necesario (solo en condiciones estables)
+        if (pressure < 0.2 && filteredO2 > initialO2 && TotalTime < 30000) {
+            initialO2 = filteredO2;
+        }
+        
+        // Modo demo: simular consumo de O2
+        if (DEMO) {
+            lastO2 = initialO2 - 4; // Simulación fija para demo
+        }
+        
+        // Calcular diferencia de CO2 equivalente (para compatibilidad)
+        co2 = initialO2 - lastO2;
+        if (co2 < 0) co2 = 0; // Asegurar que no sea negativo
+        
+        xSemaphoreGive(sensorDataMutex);
+    } else {
+        // No se pudo obtener mutex: log pero no bloquear
+        logSensorError("O2", 0, "Timeout mutex - lectura omitida");
+    }
 }
 
+/**
+ * Cálculo optimizado de VO2 máximo con validación robusta
+ * Implementa las ecuaciones estándar con correcciones STPD/BTPS
+ * 
+ * Fórmula base: VO2 = VE × (FiO2 - FeO2) × densidad_correction
+ * Donde:
+ * - VE: Ventilación minuto (L/min)
+ * - FiO2: Fracción inspirada de O2 (inicial)
+ * - FeO2: Fracción espirada de O2 (medida)
+ * - densidad_correction: Factor de corrección BTPS/STPD
+ */
 void vo2maxCalc() {
-    if (DEMO) return;
+    if (DEMO) return; // Salir temprano en modo demo
+    
+    // Protección con mutex para cálculos críticos
+    if (calculationMutex == NULL) {
+        calculationMutex = xSemaphoreCreateMutex();
+    }
+    
+    if (!xSemaphoreTake(calculationMutex, pdMS_TO_TICKS(100))) {
+        logSensorError("VO2Calc", 0, "Timeout mutex cálculo");
+        return;
+    }
+    
+    // Leer sensores con validación
     ReadO2();
     AirDensity();
-    if (lastO2 < 10.0 || lastO2 > 25.0) {
-        Serial.println("Valor O2 inválido, omitiendo cálculo");
+    
+    // Validación de prerrequisitos para cálculo válido
+    if (!isValidO2Reading(lastO2)) {
+        Serial.println("O2 inválido - omitiendo cálculo VO2");
+        xSemaphoreGive(calculationMutex);
         return;
     }
+    
+    if (!isValidTemperatureReading(TempC) || !validateSensorData(PresPa, ATMOSPHERIC_PRESSURE_MIN, ATMOSPHERIC_PRESSURE_MAX, "PresionAtm")) {
+        Serial.println("Condiciones ambientales inválidas - omitiendo cálculo VO2");
+        xSemaphoreGive(calculationMutex);
+        return;
+    }
+    
+    // Validar ventilación mínima para cálculo meaningful
+    if (volumeVEmean < 1.0) { // L/min mínimo
+        Serial.println("Ventilación insuficiente para cálculo VO2");
+        xSemaphoreGive(calculationMutex);
+        return;
+    }
+    
+    // Calcular diferencia de O2 con validación fisiológica
     co2 = initialO2 - lastO2;
-    if (co2 < 0) co2 = 0;
-    float vo2TotalRaw = volumeVEmean * rhoBTPS / rhoSTPD * co2 * 10;
-    if (vo2TotalRaw < 0 || vo2TotalRaw > 10000) {
-
-
-        Serial.println("Valor VO2 inválido, omitiendo cálculo");
+    if (co2 < 0) {
+        co2 = 0; // No puede ser negativo
+    } else if (co2 > 10.0) {
+        // Diferencia muy alta es sospechosa
+        logSensorError("VO2Calc", co2, "Diferencia O2 excesiva");
+        co2 = constrain(co2, 0, 10.0); // Limitar a valores fisiológicos
+    }
+    
+    // ============================================================================
+    // CÁLCULO PRINCIPAL DE VO2 CON CORRECCIONES ESTÁNDAR
+    // ============================================================================
+    
+    /**
+     * Corrección de densidad del aire:
+     * - rhoBTPS: Condiciones corporales (37°C, saturado de vapor)
+     * - rhoSTPD: Condiciones estándar (0°C, seco, 760 mmHg)
+     * Factor de corrección = rhoBTPS / rhoSTPD
+     */
+    float densityCorrection = rhoBTPS / rhoSTPD;
+    
+    /**
+     * Cálculo de VO2 total (ml/min):
+     * VO2 = VE × (FiO2 - FeO2) × factor_densidad × factor_conversión
+     * - Multiplicador 10: conversión de % a fracción decimal y ajuste unidades
+     */
+    float vo2TotalRaw = volumeVEmean * densityCorrection * co2 * 10.0;
+    
+    // Validación del resultado bruto
+    if (!validateSensorData(vo2TotalRaw, 0, 10000, "VO2Total")) {
+        Serial.printf("VO2 total calculado inválido: %.2f ml/min\n", vo2TotalRaw);
+        xSemaphoreGive(calculationMutex);
         return;
     }
+    
+    // Aplicar filtro Kalman optimizado para VO2 total
     vo2Total = filtroVolumen.filtrar(vo2TotalRaw);
-    float vo2MaxRaw = vo2Total / settings.weightkg;
-    if (vo2MaxRaw < 3 || vo2MaxRaw > 100) {
-        Serial.println("VO2/kg fuera de rango fisiológico");
+    
+    /**
+     * Cálculo de VO2 relativo (ml/kg/min):
+     * Normalización por peso corporal para comparación estándar
+     */
+    if (settings.weightkg <= 0) {
+        logSensorError("VO2Calc", settings.weightkg, "Peso corporal inválido");
+        xSemaphoreGive(calculationMutex);
         return;
     }
-    vo2Max = filtroVO2.filtrar(vo2MaxRaw);
-    if (vo2Max > vo2MaxMax) vo2MaxMax = vo2Max;
-    vo2Cal = vo2Total / 1000 * 4.86;
-    calTotal = calTotal + vo2Cal * TimerVO2diff / 60000;
-    vo2CalH = vo2Cal * 60.0;
+    
+    float vo2MaxRaw = vo2Total / settings.weightkg;
+    
+    // Validación fisiológica del VO2/kg
+    if (!validateSensorData(vo2MaxRaw, VO2_MIN_PHYSIOLOGICAL, VO2_MAX_PHYSIOLOGICAL, "VO2perKg")) {
+        Serial.printf("VO2/kg fuera de rango fisiológico: %.2f ml/kg/min\n", vo2MaxRaw);
+        xSemaphoreGive(calculationMutex);
+        return;
+    }
+    
+    // Aplicar filtro Kalman para VO2/kg con parámetros adaptativos
+    if (TotalTime < 60000) { // Primeros 60 segundos: filtrado más suave
+        static FiltroKalman filtroVO2Init(0.1, 0.5);
+        vo2Max = filtroVO2Init.filtrar(vo2MaxRaw);
+    } else {
+        vo2Max = filtroVO2.filtrar(vo2MaxRaw);
+    }
+    
+    // Actualizar máximo histórico con validación temporal
+    if (vo2Max > vo2MaxMax && TotalTime > 30000) { // Solo después de 30s de estabilización
+        vo2MaxMax = vo2Max;
+        Serial.printf("Nuevo VO2 máximo: %.2f ml/kg/min\n", vo2MaxMax);
+    }
+    
+    // ============================================================================
+    // CÁLCULO DE GASTO ENERGÉTICO
+    // ============================================================================
+    
+    /**
+     * Conversión a calorías usando equivalente calórico del oxígeno:
+     * 1 L O2 ≈ 4.86 kcal (valor promedio para RQ mixto)
+     * Fórmula: kcal/min = (VO2_total / 1000) × 4.86
+     */
+    vo2Cal = (vo2Total / 1000.0) * 4.86;
+    
+    // Validar cálculo calórico
+    if (vo2Cal < 0 || vo2Cal > 50.0) { // Límites fisiológicos razonables
+        logSensorError("Calorias", vo2Cal, "Gasto calórico fuera de rango");
+        vo2Cal = constrain(vo2Cal, 0, 50.0);
+    }
+    
+    // Integrar calorías totales usando tiempo transcurrido
+    if (TimerVO2diff > 0) {
+        float calIncrement = vo2Cal * (TimerVO2diff / 60000.0); // Convertir ms a min
+        calTotal += calIncrement;
+        
+        // Calcular gasto energético por hora
+        vo2CalH = vo2Cal * 60.0; // kcal/hora
+        
+        // Log periódico del gasto energético
+        static unsigned long lastEnergyLog = 0;
+        if (millis() - lastEnergyLog > 60000) { // Cada minuto
+            Serial.printf("Energía: %.1f kcal/min, %.0f kcal/h, Total: %.1f kcal\n", 
+                         vo2Cal, vo2CalH, calTotal);
+            lastEnergyLog = millis();
+        }
+    }
+    
+    xSemaphoreGive(calculationMutex);
+    
+    // Log de depuración detallado (solo cada 30 segundos para no saturar)
+    static unsigned long lastDetailedLog = 0;
+    if (millis() - lastDetailedLog > 30000 && VERBOSE) {
+        Serial.printf("VO2 Detalle: VE=%.1f L/min, O2diff=%.2f%%, VO2=%.1f ml/kg/min, Max=%.1f\n",
+                     volumeVEmean, co2, vo2Max, vo2MaxMax);
+        lastDetailedLog = millis();
+    }
 }
 
 void showParameters() {
@@ -2031,32 +3016,39 @@ bool performSyringeCalibration() {
     return passed;
 }
 
+/**
+ * Guarda la configuración en EEPROM (función de compatibilidad)
+ * Redirige a la nueva función con checksum
+ */
 void saveSettings() {
-    bool changed = false;
-    for (int i = 0; i < sizeof(settings); ++i) {
-        byte b = EEPROM.read(i);
-        if (b != ((byte *)&settings)[i]) {
-            EEPROM.write(i, ((byte *)&settings)[i]);
-            changed = true;
-        }
-    }
-    if (changed) EEPROM.commit();
+    saveSettingsWithChecksum();
 }
 
+/**
+ * Carga la configuración desde EEPROM (función de compatibilidad)
+ * Redirige a la nueva función con verificación de integridad
+ */
+void loadSettings() {
+    if (!loadSettingsWithChecksum()) {
+        Serial.println("Fallo al cargar configuración, usando valores por defecto");
+    }
+}
+
+/**
+ * Muestra mensajes de error en pantalla con severidad diferenciada
+ * @param message Mensaje de error a mostrar
+ * @param critical Si es true, muestra error crítico (rojo), sino advertencia (naranja)
+ */
 void showError(const char* message, bool critical) {
     tft.fillScreen(critical ? TFT_RED : TFT_ORANGE);
     tft.setTextColor(TFT_WHITE, critical ? TFT_RED : TFT_ORANGE);
     tft.drawCentreString("ERROR", 120, 40, 4);
     tft.drawCentreString(message, 120, 80, 2);
+    
+    // Log del error también por serial
+    Serial.printf("[%s] %s\n", critical ? "CRITICO" : "ADVERTENCIA", message);
+    
     delay(critical ? 3000 : 1500);
-}
-
-void loadSettings() {
-    int version = EEPROM.read(0);
-    if (version == settings.version) {
-        for (int i = 0; i < sizeof(settings); ++i)
-            ((byte *)&settings)[i] = EEPROM.read(i);
-    }
 }
 
 // --- MODO VO2 COMPATIBLE CON VERSION 1 CURVO ---
@@ -2193,18 +3185,151 @@ void runVO2Mode() {
                         }
         }
         
+/**
+ * Cálculo optimizado de densidad del aire con correcciones ambientales
+ * Implementa la ecuación de gas ideal con factores de corrección específicos
+ * 
+ * Ecuaciones utilizadas:
+ * 1. Densidad aire seco: ρ = P / (R_específico × T)
+ * 2. Condiciones BTPS: Body Temperature Pressure Saturated (37°C, saturado)
+ * 3. Condiciones STPD: Standard Temperature Pressure Dry (0°C, seco, 1 atm)
+ */
 void AirDensity() {
-    TempC = bmp.readTemperature(); // Leer temperatura del sensor barométrico BMP180
-    PresPa = bmp.readPressure();   // Leer presión del sensor barométrico BMP180
-
-    if (isnan(TempC) || isnan(PresPa)) {
-        tft.fillScreen(TFT_RED);
-        tft.setTextColor(TFT_WHITE, TFT_RED);
-        tft.drawCentreString("Temp/Press Error!", 120, 60, 4);
-        delay(2000);
+    static unsigned long lastSuccessfulReading = 0;
+    static float lastValidTemp = 20.0;
+    static float lastValidPressure = 101325.0;
+    
+    // Protección con mutex para operaciones críticas
+    if (sensorDataMutex == NULL) {
+        sensorDataMutex = xSemaphoreCreateMutex();
+    }
+    
+    if (!xSemaphoreTake(sensorDataMutex, pdMS_TO_TICKS(100))) {
+        logSensorError("AirDensity", 0, "Timeout mutex densidad");
         return;
     }
-
-    rho = PresPa / (TempC + 273.15) / 287.058;  // Cálculo de densidad del aire seco
-    rhoBTPS = PresPa / (35 + 273.15) / 292.9;   // Densidad en condiciones BTPS: 35°C, 95% humedad
+    
+    // Leer temperatura y presión del sensor BMP280
+    float tempReading = bmp.readTemperature();
+    float pressureReading = bmp.readPressure();
+    
+    // Validar lecturas del sensor ambiental
+    bool tempValid = isValidTemperatureReading(tempReading);
+    bool pressureValid = validateSensorData(pressureReading, ATMOSPHERIC_PRESSURE_MIN, ATMOSPHERIC_PRESSURE_MAX, "PresionAtm");
+    
+    if (!tempValid || !pressureValid) {
+        sensorErrors.temperatureErrors++;
+        sensorErrors.lastTempErrorTime = millis();
+        
+        // Usar últimos valores válidos si están disponibles y son recientes
+        if (millis() - lastSuccessfulReading < 30000) { // 30 segundos
+            TempC = lastValidTemp;
+            PresPa = lastValidPressure;
+            Serial.println("Usando últimas lecturas ambientales válidas");
+        } else {
+            // Usar valores por defecto después de 30 segundos sin lecturas válidas
+            TempC = 20.0; // °C - temperatura ambiente típica
+            PresPa = 101325.0; // Pa - presión atmosférica estándar
+            logSensorError("Ambiental", 0, "Usando valores por defecto");
+        }
+        
+        // Mostrar error crítico si es NaN
+        if (isnan(tempReading) || isnan(pressureReading)) {
+            showError("Sensor ambiental error!", true);
+        }
+    } else {
+        // Lecturas válidas: actualizar valores
+        TempC = tempReading;
+        PresPa = pressureReading;
+        lastSuccessfulReading = millis();
+        lastValidTemp = TempC;
+        lastValidPressure = PresPa;
+    }
+    
+    // ============================================================================
+    // CÁLCULO DE DENSIDADES SEGÚN CONDICIONES ESTÁNDAR
+    // ============================================================================
+    
+    /**
+     * Constantes físicas utilizadas:
+     * - R_específico_aire_seco = 287.058 J/(kg·K) - Constante específica del aire seco
+     * - R_específico_aire_húmedo ≈ 292.9 J/(kg·K) - Para condiciones BTPS
+     */
+    const float R_AIRE_SECO = 287.058;    // J/(kg·K)
+    const float R_AIRE_HUMEDO = 292.9;    // J/(kg·K) aproximado para aire saturado
+    
+    // Convertir temperatura a Kelvin
+    float tempK = TempC + 273.15;
+    
+    // Validar temperatura en Kelvin (debe ser > 0 y < 400K para ser realista)
+    if (tempK <= 0 || tempK > 400) {
+        logSensorError("TempKelvin", tempK, "Temperatura absoluta fuera de rango");
+        tempK = 293.15; // 20°C por defecto
+    }
+    
+    /**
+     * Densidad del aire seco en condiciones actuales:
+     * ρ = P / (R_específico × T)
+     * 
+     * Esta es la densidad real del aire en las condiciones ambientales medidas
+     */
+    rho = PresPa / (R_AIRE_SECO * tempK);
+    
+    /**
+     * Densidad BTPS (Body Temperature Pressure Saturated):
+     * Condiciones corporales: 37°C, presión ambiental, saturado de vapor
+     * 
+     * Se usa para corregir volúmenes medidos a condiciones corporales
+     */
+    float tempBTPS = 37.0 + 273.15; // 37°C en Kelvin
+    rhoBTPS = PresPa / (R_AIRE_HUMEDO * tempBTPS);
+    
+    /**
+     * Densidad STPD (Standard Temperature Pressure Dry):
+     * Condiciones estándar: 0°C, 1 atm (101325 Pa), aire seco
+     * 
+     * Se usa como referencia para normalizar mediciones
+     */
+    float tempSTPD = 0.0 + 273.15; // 0°C en Kelvin
+    float presSTPD = 101325.0;     // 1 atm en Pa
+    rhoSTPD = presSTPD / (R_AIRE_SECO * tempSTPD);
+    
+    // Validar densidades calculadas
+    if (rho <= 0 || rho > 2.0 || rhoBTPS <= 0 || rhoBTPS > 2.0) {
+        logSensorError("Densidad", rho, "Densidades calculadas inválidas");
+        
+        // Usar densidades estándar como fallback
+        rho = 1.225;     // kg/m³ - densidad estándar del aire
+        rhoBTPS = 1.123; // kg/m³ - densidad en condiciones BTPS
+        rhoSTPD = 1.292; // kg/m³ - densidad en condiciones STPD
+    }
+    
+    xSemaphoreGive(sensorDataMutex);
+    
+    // Log periódico de condiciones ambientales (cada 2 minutos)
+    static unsigned long lastEnvironmentalLog = 0;
+    if (millis() - lastEnvironmentalLog > 120000) {
+        Serial.printf("Ambiente: %.1f°C, %.0f hPa, ρ=%.3f kg/m³\n", 
+                     TempC, PresPa/100.0, rho);
+        Serial.printf("Correcciones: BTPS=%.3f, STPD=%.3f kg/m³\n", 
+                     rhoBTPS, rhoSTPD);
+        lastEnvironmentalLog = millis();
+    }
+    
+    // Verificación de condiciones extremas para advertencias
+    if (TempC < 5.0 || TempC > 40.0) {
+        static unsigned long lastTempWarning = 0;
+        if (millis() - lastTempWarning > 60000) { // Cada minuto máximo
+            Serial.printf("ADVERTENCIA: Temperatura extrema %.1f°C\n", TempC);
+            lastTempWarning = millis();
+        }
+    }
+    
+    if (PresPa < 90000 || PresPa > 110000) { // Fuera del rango típico al nivel del mar
+        static unsigned long lastPressWarning = 0;
+        if (millis() - lastPressWarning > 60000) {
+            Serial.printf("ADVERTENCIA: Presión atípica %.0f hPa\n", PresPa/100.0);
+            lastPressWarning = millis();
+        }
+    }
 }

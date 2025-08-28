@@ -178,8 +178,11 @@ float MetabolicCalculator::calculateCaloriesFromRER(float vo2, float vco2, float
     return (3.941f * vo2_L_min) + (1.106f * vco2_L_min);
 }
 
+float MetabolicCalculator::calculateVCO2FromConcentration(float ventilation, float co2Ppm);
+
 void MetabolicCalculator::calculateSubstrateUtilization(float rer, float& carbPercent, 
                                                       float& fatPercent, float& proteinPercent) {
+float MetabolicCalculator::calculateVCO2FromConcentration(float ventilation, float co2Ppm);
     // Simplified substrate utilization based on RER
     // Assumes negligible protein oxidation for exercise
     

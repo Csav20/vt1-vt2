@@ -78,6 +78,7 @@ bool SensorManager::readSensors(SensorData& output) {
     output.timestamp = millis();
     
     bool success = true;
+    float ambientPressure = 101325.0f; // Default atmospheric pressure
     
     #ifdef USE_MAX30102
     // Read heart rate and SpO2
@@ -303,6 +304,12 @@ float SensorManager::calculateDensity(float temperature, float pressure) {
     // R_specific for air = 287 J/(kg·K)
     float tempKelvin = temperature + 273.15f;
     return pressure / (287.0f * tempKelvin);
+}
+
+float SensorManager::applyBernoulliEquation(float pressure1, float pressure2, float density) {
+    // Simplified Bernoulli equation for flow calculation
+    float deltaP = abs(pressure1 - pressure2);
+    return sqrt(2.0f * deltaP / density);
 }
 
 bool SensorManager::loadCalibration() {

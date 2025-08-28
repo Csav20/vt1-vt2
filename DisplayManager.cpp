@@ -1,4 +1,5 @@
 #include "DisplayManager.h"
+#include <math.h>
 
 // Static member definitions
 TFT_eSPI DisplayManager::tft = TFT_eSPI();
@@ -290,12 +291,12 @@ void DisplayManager::drawRespiratoryData(const DisplayData& data) {
     }
     
     // Respiratory specific display
-    updateCell(0, "VE", String(data.pressure * 0.1, 1) + " L/min");
-    updateCell(1, "TV", "500 mL");
-    updateCell(2, "RR", "15 /min");
+    updateCell(0, String(data.pressure * 0.1, 1), "L/min");
+    updateCell(1, "500", "mL");
+    updateCell(2, "15", "/min");
     updateCell(3, String(data.o2Percent, 1), "% O2");
-    updateCell(4, String(data.co2Ppm, 0), "CO2 ppm");
-    updateCell(5, "I:E", "1:2");
+    updateCell(4, String(data.co2Ppm, 0), "ppm");
+    updateCell(5, "1:2", "I:E");
     updateCell(6, String(data.temperature, 1), "°C");
     updateCell(7, String(data.humidity, 0), "% RH");
     updateCell(8, "RESP", "");
@@ -306,14 +307,14 @@ void DisplayManager::drawThresholds(const DisplayData& data) {
         drawGrid();
     }
     
-    updateCell(0, "VT1", "-- W");
-    updateCell(1, "VT2", "-- W");
-    updateCell(2, "VO2max", "-- mL");
-    updateCell(3, "HR", "-- bpm");
-    updateCell(4, "Power", "-- W");
-    updateCell(5, "Lactate", "-- mmol");
-    updateCell(6, "Status", "Ready");
-    updateCell(7, "Time", "00:00");
+    updateCell(0, "--", "W VT1");
+    updateCell(1, "--", "W VT2");
+    updateCell(2, "--", "mL VO2max");
+    updateCell(3, "--", "bpm HR");
+    updateCell(4, "--", "W Power");
+    updateCell(5, "--", "mmol Lactate");
+    updateCell(6, "Ready", "Status");
+    updateCell(7, "00:00", "Time");
     updateCell(8, "THRESH", "");
 }
 
@@ -324,13 +325,13 @@ void DisplayManager::drawCalorimetry(const DisplayData& data) {
     
     float calories = data.vo2 * 0.005; // Rough calculation
     updateCell(0, String(calories, 1), "kcal/min");
-    updateCell(1, "CHO", "50%");
-    updateCell(2, "FAT", "50%");
+    updateCell(1, "50", "% CHO");
+    updateCell(2, "50", "% FAT");
     updateCell(3, String(data.rer, 2), "RER");
-    updateCell(4, "EE", String(calories * 60, 0) + " kcal/h");
-    updateCell(5, "Substrat", "Mixed");
-    updateCell(6, "Efficiency", "22%");
-    updateCell(7, "METs", String(data.vo2 / 70.0 / 3.5, 1));
+    updateCell(4, String(calories * 60, 0), "kcal/h");
+    updateCell(5, "Mixed", "Substrate");
+    updateCell(6, "22", "% Efficiency");
+    updateCell(7, String(data.vo2 / 70.0 / 3.5, 1), "METs");
     updateCell(8, "METAB", "");
 }
 

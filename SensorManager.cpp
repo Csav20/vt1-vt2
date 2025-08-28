@@ -1,5 +1,6 @@
 #include "SensorManager.h"
 #include <Arduino.h>
+#include <math.h>
 
 // Static member definitions
 DFRobot_OxygenSensor SensorManager::oxygenSensor;
@@ -58,12 +59,12 @@ bool SensorManager::initialize() {
 }
 
 bool SensorManager::initializeO2Sensor() {
-    // Initialize DFRobot O2 sensor
-    oxygenSensor.begin(ADDRESS_3);
+    // Initialize DFRobot O2 sensor with address 0x73
+    oxygenSensor.begin(0x73);
     
     // Test communication
     delay(100);
-    float testReading = oxygenSensor.ReadOxygenData(OXYGEN_COLLECT_NUMBER);
+    float testReading = oxygenSensor.ReadOxygenData(10);
     
     if (testReading > 0 && testReading < 30) {
         Serial.println("O2 sensor: OK");
@@ -136,7 +137,7 @@ bool SensorManager::readSensors(SensorData& data) {
     data.ambientValid = false;
     
     // Read O2 sensor
-    float rawO2 = oxygenSensor.ReadOxygenData(OXYGEN_COLLECT_NUMBER);
+    float rawO2 = oxygenSensor.ReadOxygenData(10);
     if (rawO2 > 0 && rawO2 < 30) {
         data.o2Percent = o2Filter.update(rawO2 * calibration.o2Correction);
         data.o2Valid = true;
@@ -195,7 +196,7 @@ bool SensorManager::calibrateO2(float referenceO2) {
     int validReadings = 0;
     
     for (int i = 0; i < 20; i++) {
-        float reading = oxygenSensor.ReadOxygenData(OXYGEN_COLLECT_NUMBER);
+        float reading = oxygenSensor.ReadOxygenData(10);
         if (reading > 0 && reading < 30) {
             sum += reading;
             validReadings++;

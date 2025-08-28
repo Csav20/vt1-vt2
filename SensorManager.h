@@ -1,10 +1,20 @@
 #pragma once
 #include <Arduino.h>
+#include <Wire.h>
 #include "DFRobot_OxygenSensor.h"
 #include "SCD30.h"
 #include "Omron_D6FPH.h"
 #include "Adafruit_BMP280.h"
 #include "KalmanFilter.h"
+
+// Sensor addresses
+#ifndef ADDRESS_3
+#define ADDRESS_3 0x73
+#endif
+
+#ifndef OXYGEN_COLLECT_NUMBER
+#define OXYGEN_COLLECT_NUMBER 10
+#endif
 
 /**
  * Sensor Manager - Unified sensor reading and filtering

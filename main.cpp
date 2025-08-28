@@ -25,6 +25,7 @@
 #include "DisplayManager.h"
 #include "BluetoothManager.h"
 #include "SensorManager.h"
+#include "WiFiManager.h"
 
 // Device configuration
 #define DEVICE_VERSION "V3.1 2025/04/02"
@@ -43,7 +44,7 @@
 #define BUTTON_PIN2 35
 
 // Sensor configuration
-#define OXYGEN_I2C_ADDRESS ADDRESS_3
+#define OXYGEN_I2C_ADDRESS 0x73  // ADDRESS_3 equivalent
 #define OXYGEN_COLLECT_NUMBER 10
 
 // Timing constants
@@ -158,6 +159,11 @@ void loop() {
     // Handle BLE events
     BluetoothManager::handleEvents();
     
+    // Handle WiFi events
+    if (settings.wifiEnabled) {
+        WiFiManager::handleEvents();
+    }
+    
     // Small delay to prevent watchdog issues
     delay(1);
 }
@@ -195,8 +201,9 @@ void initializeSystem() {
     
     // Initialize WiFi if enabled
     if (settings.wifiEnabled) {
-        WiFi.begin(ssid, password);
-        Serial.println("Connecting to WiFi...");
+        WiFiManager::initialize(ssid, password);
+        WiFiManager::connect();
+        Serial.println("WiFi connection initiated...");
     }
     
     // Set initial display mode
@@ -256,7 +263,7 @@ void updateDisplay() {
     displayData.humidity = liveData.humidity;
     displayData.batteryVoltage = liveData.batteryVoltage;
     displayData.bleConnected = BluetoothManager::isConnected();
-    displayData.wifiConnected = WiFi.status() == WL_CONNECTED;
+    displayData.wifiConnected = WiFiManager::isConnected();
     displayData.time = String(millis() / 1000);
     displayData.mode = currentMode;
     

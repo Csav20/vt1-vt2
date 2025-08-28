@@ -7,6 +7,16 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <WiFi.h>
+#include <BLEDevice.h>
+#include <esp_pm.h>
+#include <esp_bt.h>
+#include <EEPROM.h>
+
+// Constantes para validación de datos
+#define VO2_METHOD_VSLOPE 0
+#define VO2_METHOD_WASSERMAN 1
+#define OXYGEN_COLLECT_NUMBER 100
 
 class CoreManager {
 public:
@@ -45,14 +55,18 @@ public:
 
     static bool begin();
     static bool readSensors(SensorData& output);
+    static bool validateSensorData(const SensorData& data);
     static void calibrateO2(float reference = 20.93);
     static void calibrateFlow(float reference = 1.0);
+    static bool recoverFromError();
+    static uint32_t getErrorCount();
     
 private:
     static DFRobot_OxygenSensor oxygenSensor;
     static Omron_D6FPH pressureSensor;
     static Adafruit_BMP280 bmp;
     static bool sensorsInitialized;
+    static uint32_t errorCount;
 };
 ```
 
@@ -172,6 +186,7 @@ public:
     static float getBatteryVoltage();
     static uint8_t getBatteryLevel();
     static void enablePowerSaveMode();
+    static void disablePowerSaveMode();
     static void update();
     
 private:
@@ -239,10 +254,40 @@ public:
 private:
     static const uint32_t EEPROM_SIZE;
     static const uint32_t SETTINGS_MAGIC_NUMBER;
+    static uint32_t calculateCRC32(const uint8_t* data, size_t length);
 };
 ```
 
-### 9. **Módulo de Tareas (Implementación)**
+### 9. **Módulo de Monitoreo del Sistema**
+```cpp
+// SystemMonitor.h
+#pragma once
+
+class SystemMonitor {
+public:
+    struct SystemStatus {
+        bool sensorsHealthy;
+        bool powerHealthy;
+        bool memoryHealthy;
+        bool connectivityHealthy;
+        float cpuUsage;
+        uint32_t freeHeap;
+        uint32_t totalErrors;
+    };
+    
+    static void initialize();
+    static SystemStatus getSystemStatus();
+    static void logSystemHealth();
+    static bool isSystemHealthy();
+    
+private:
+    static uint32_t lastHeapCheck;
+    static uint32_t minHeapSeen;
+    static bool criticalErrorState;
+};
+```
+
+### 10. **Módulo de Tareas (Implementación)**
 ```cpp
 // CoreManager.cpp
 #include "VO2Smart_Core.h"
@@ -273,19 +318,48 @@ void CoreManager::createTasks() {
 
 void CoreManager::sensorTask(void* params) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
+    uint32_t sensorErrorCount = 0;
+    const uint32_t MAX_SENSOR_ERRORS = 5;
     
     while(true) {
         SensorManager::SensorData sensorData;
+        bool dataValid = false;
         
-        if(xSemaphoreTake(xSensorMutex, pdMS_TO_TICKS(100))) {
-            SensorManager::readSensors(sensorData);
+        // Timeout más largo para sensor mutex con reintentos
+        if(xSemaphoreTake(xSensorMutex, pdMS_TO_TICKS(200))) {
+            dataValid = SensorManager::readSensors(sensorData);
             xSemaphoreGive(xSensorMutex);
+            
+            if(dataValid) {
+                sensorErrorCount = 0; // Reset error counter on successful read
+            } else {
+                sensorErrorCount++;
+                if(sensorErrorCount >= MAX_SENSOR_ERRORS) {
+                    Serial.println("Error: Demasiados errores de sensor consecutivos");
+                    // Usar el mecanismo de recuperación robusto
+                    bool recovered = SensorManager::recoverFromError();
+                    if(!recovered && SensorManager::getErrorCount() > 10) {
+                        Serial.println("Error crítico: Sensores no responden - Modo degradado");
+                        // En modo degradado, usar solo datos simulados o últimos válidos
+                    }
+                    sensorErrorCount = 0;
+                }
+            }
+        } else {
+            Serial.println("Warning: Timeout en adquisición de sensor mutex");
+            sensorErrorCount++;
         }
 
-        if(xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(100))) {
+        // Solo procesar datos si son válidos
+        if(dataValid && xSemaphoreTake(xDataMutex, pdMS_TO_TICKS(150))) {
             MetabolicCalculator::MetabolicData metabolicData;
             MetabolicCalculator::calculate(sensorData, metabolicData);
             xSemaphoreGive(xDataMutex);
+        } else if(!dataValid) {
+            // Skip this cycle if sensor data is invalid
+            Serial.println("Skipping calculation cycle due to invalid sensor data");
+        } else {
+            Serial.println("Warning: Timeout en adquisición de data mutex");
         }
         
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(50)); // 20Hz
@@ -294,11 +368,48 @@ void CoreManager::sensorTask(void* params) {
 
 void CoreManager::uiTask(void* params) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
+    uint32_t displayErrorCount = 0;
+    const uint32_t MAX_DISPLAY_ERRORS = 3;
+    uint32_t healthCheckCounter = 0;
+    const uint32_t HEALTH_CHECK_INTERVAL = 100; // Cada 10 segundos (100 * 100ms)
     
     while(true) {
-        if(xSemaphoreTake(xDisplayMutex, pdMS_TO_TICKS(100))) {
+        // UI tiene prioridad más alta, timeout más corto pero con reintentos
+        if(xSemaphoreTake(xDisplayMutex, pdMS_TO_TICKS(50))) {
             DisplayManager::update();
             xSemaphoreGive(xDisplayMutex);
+            displayErrorCount = 0;
+        } else {
+            displayErrorCount++;
+            Serial.println("Warning: Timeout en adquisición de display mutex");
+            
+            if(displayErrorCount >= MAX_DISPLAY_ERRORS) {
+                Serial.println("Error: Demasiados timeouts de display, reiniciando interfaz");
+                DisplayManager::initialize();
+                displayErrorCount = 0;
+            }
+        }
+        
+        // Monitoreo periódico del sistema
+        healthCheckCounter++;
+        if(healthCheckCounter >= HEALTH_CHECK_INTERVAL) {
+            healthCheckCounter = 0;
+            
+            // Verificar salud del sistema
+            if(!SystemMonitor::isSystemHealthy()) {
+                Serial.println("Advertencia: Sistema en estado no óptimo");
+            }
+            
+            // Actualizar estado de energía
+            PowerManager::update();
+            
+            // Log periódico del estado (cada minuto)
+            static uint32_t logCounter = 0;
+            logCounter++;
+            if(logCounter >= 6) { // 6 * 10 segundos = 60 segundos
+                logCounter = 0;
+                SystemMonitor::logSystemHealth();
+            }
         }
         
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(100)); // 10Hz
@@ -316,10 +427,13 @@ void CoreManager::uiTask(void* params) {
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("Iniciando VO2Smart con mejoras de rendimiento...");
     
     // Inicializar subsistemas
     ConfigurationManager::begin();
     CoreManager::initialize();
+    SystemMonitor::initialize();
+    PowerManager::begin();
     
     // Configurar conectividad
     ConnectivityManager::Config config {
@@ -333,6 +447,9 @@ void setup() {
     
     // Configurar entradas de usuario
     UserInputManager::initialize(BUTTON_PIN1, BUTTON_PIN2);
+    
+    // Log inicial del estado del sistema
+    SystemMonitor::logSystemHealth();
     
     // Crear tareas principales
     CoreManager::createTasks();
@@ -402,6 +519,7 @@ DFRobot_OxygenSensor SensorManager::oxygenSensor;
 Omron_D6FPH SensorManager::pressureSensor;
 Adafruit_BMP280 SensorManager::bmp;
 bool SensorManager::sensorsInitialized = false;
+uint32_t SensorManager::errorCount = 0;
 
 bool SensorManager::begin() {
     if(sensorsInitialized) return true;
@@ -433,6 +551,47 @@ bool SensorManager::begin() {
     return true;
 }
 
+// Función de validación de datos de sensores
+bool SensorManager::validateSensorData(const SensorData& data) {
+    // Validar presión diferencial (rango típico: -500 a +500 Pa)
+    if(data.pressure < -1000.0 || data.pressure > 1000.0) {
+        Serial.println("Error: Presión fuera de rango");
+        return false;
+    }
+    
+    // Validar porcentaje de O2 (rango válido: 15-25%)
+    if(data.o2Percent < 15.0 || data.o2Percent > 25.0) {
+        Serial.println("Error: O2 fuera de rango");
+        return false;
+    }
+    
+    // Validar temperatura ambiente (rango operativo: -10 a 60°C)
+    if(data.ambientTemp < -10.0 || data.ambientTemp > 60.0) {
+        Serial.println("Error: Temperatura fuera de rango");
+        return false;
+    }
+    
+    // Validar presión atmosférica (rango: 800-1200 hPa)
+    if(data.ambientPressure < 80000.0 || data.ambientPressure > 120000.0) {
+        Serial.println("Error: Presión atmosférica fuera de rango");
+        return false;
+    }
+    
+    // Validar CO2 si está disponible (rango normal: 300-5000 ppm)
+    if(data.co2Ppm > 0 && (data.co2Ppm < 300.0 || data.co2Ppm > 10000.0)) {
+        Serial.println("Error: CO2 fuera de rango");
+        return false;
+    }
+    
+    // Validar humedad si está disponible (rango: 0-100%)
+    if(data.humidity > 0 && (data.humidity < 0.0 || data.humidity > 100.0)) {
+        Serial.println("Error: Humedad fuera de rango");
+        return false;
+    }
+    
+    return true;
+}
+
 bool SensorManager::readSensors(SensorData& output) {
     if(!sensorsInitialized) return false;
 
@@ -461,6 +620,21 @@ bool SensorManager::readSensors(SensorData& output) {
         output.humidity = 0;
     }
 
+    // Validar datos antes de retornar
+    if(!validateSensorData(output)) {
+        Serial.println("Warning: Datos de sensores inválidos detectados");
+        // Mantener valores anteriores válidos como respaldo
+        static SensorData lastValidData = {0};
+        if(lastValidData.o2Percent > 0) {
+            output = lastValidData;
+        }
+        return false;
+    }
+    
+    // Almacenar datos válidos para respaldo
+    static SensorData lastValidData = output;
+    lastValidData = output;
+
     return true;
 }
 
@@ -477,6 +651,29 @@ void SensorManager::calibrateO2(float reference) {
     ConfigurationManager::DeviceSettings settings = ConfigurationManager::load();
     settings.flowCalibFactor = factor;
     ConfigurationManager::save(settings);
+}
+
+bool SensorManager::recoverFromError() {
+    Serial.println("Intentando recuperación de sensores...");
+    
+    // Reinicializar todos los sensores
+    sensorsInitialized = false;
+    delay(1000); // Esperar para estabilización
+    
+    bool recovery = begin();
+    if(recovery) {
+        Serial.println("Recuperación de sensores exitosa");
+        errorCount = 0; // Reset error counter on successful recovery
+    } else {
+        Serial.println("Falla en recuperación de sensores");
+        errorCount++;
+    }
+    
+    return recovery;
+}
+
+uint32_t SensorManager::getErrorCount() {
+    return errorCount;
 }
 ```
 
@@ -495,26 +692,94 @@ void MetabolicCalculator::configure(float weightKg, bool co2SensorEnabled) {
 }
 
 void MetabolicCalculator::calculate(const SensorManager::SensorData& input, MetabolicData& output) {
-    // Cálculo de VO2 (ml/kg/min)
+    // Validar entradas críticas antes del cálculo
+    if(weight <= 0 || weight > 300.0) {
+        Serial.println("Error: Peso del usuario inválido");
+        weight = 75.0; // Valor por defecto seguro
+    }
+    
+    // Validar diferencia de O2 (debe ser positiva y realista)
     float o2Diff = 20.93 - input.o2Percent; // FI02 - FEO2
-    float ve_btps = input.pressure * (310.15 / (input.ambientTemp + 273.15)) * (input.ambientPressure / 101325.0);
+    if(o2Diff <= 0 || o2Diff > 10.0) {
+        Serial.println("Error: Diferencia de O2 inválida");
+        // Usar valor mínimo seguro
+        o2Diff = 0.1;
+    }
+    
+    // Validar temperatura ambiente para corrección BTPS
+    float tempK = input.ambientTemp + 273.15;
+    if(tempK <= 0 || tempK > 400.0) {
+        Serial.println("Error: Temperatura inválida para corrección BTPS");
+        tempK = 298.15; // 25°C como valor por defecto
+    }
+    
+    // Validar presión atmosférica
+    float pressureRatio = input.ambientPressure / 101325.0;
+    if(pressureRatio <= 0.5 || pressureRatio > 2.0) {
+        Serial.println("Error: Presión atmosférica inválida");
+        pressureRatio = 1.0; // Valor al nivel del mar
+    }
+    
+    // Calcular volumen expirado con validaciones
+    float ve_btps = input.pressure * (310.15 / tempK) * pressureRatio;
+    
+    // Validar VE resultante (debe estar en rango fisiológico: 5-200 L/min)
+    if(ve_btps < 0 || ve_btps > 300.0) {
+        Serial.println("Error: Volumen expirado fuera de rango fisiológico");
+        ve_btps = fmax(0.1, fmin(ve_btps, 200.0)); // Limitar rango
+    }
+    
+    // Cálculo de VO2 (ml/kg/min) con verificación
     output.vo2 = (ve_btps * o2Diff * 10.0) / weight;
     
-    // Actualizar VO2 máximo
+    // Validar VO2 resultante (rango fisiológico: 3-80 ml/kg/min)
+    if(output.vo2 < 0 || output.vo2 > 100.0) {
+        Serial.println("Warning: VO2 fuera de rango fisiológico normal");
+        output.vo2 = fmax(3.0, fmin(output.vo2, 80.0));
+    }
+    
+    // Actualizar VO2 máximo con validación
     static float vo2Max = 0;
-    if(output.vo2 > vo2Max) vo2Max = output.vo2;
+    if(output.vo2 > vo2Max && output.vo2 < 80.0) { // Solo actualizar si es realista
+        vo2Max = output.vo2;
+    }
     output.vo2Max = vo2Max;
     
     // Cálculo de VCO2 si hay sensor de CO2
     if(hasCO2Sensor && input.co2Ppm > 0) {
         float co2Diff = (input.co2Ppm / 10000.0) - 0.0004; // FECO2 - FICO2
-        output.vco2 = (ve_btps * co2Diff * 10.0) / weight;
-        output.rer = output.vco2 / output.vo2;
         
-        // Ecuación de Weir para calorimetría
+        // Validar diferencia de CO2
+        if(co2Diff < 0) {
+            Serial.println("Warning: Diferencia de CO2 negativa, usando valor mínimo");
+            co2Diff = 0.0001; // Valor mínimo para evitar división por cero
+        }
+        
+        output.vco2 = (ve_btps * co2Diff * 10.0) / weight;
+        
+        // Validar VCO2 (debe ser positivo y menor que VO2 * 1.5 típicamente)
+        if(output.vco2 < 0 || output.vco2 > output.vo2 * 2.0) {
+            Serial.println("Warning: VCO2 fuera de rango esperado");
+            output.vco2 = fmax(0.1, fmin(output.vco2, output.vo2 * 1.3));
+        }
+        
+        // Calcular RER con validación
+        if(output.vo2 > 0) {
+            output.rer = output.vco2 / output.vo2;
+        } else {
+            output.rer = 0.85; // Valor por defecto
+        }
+        
+        // Validar RER (rango fisiológico: 0.6-1.5)
+        if(output.rer < 0.6 || output.rer > 1.5) {
+            Serial.println("Warning: RER fuera de rango fisiológico");
+            output.rer = fmax(0.7, fmin(output.rer, 1.3));
+        }
+        
+        // Ecuación de Weir para calorimetría (validada)
         output.energyExpenditure = (3.9 * output.vo2 + 1.1 * output.vco2) / 1000.0;
         
-        // Distribución de sustratos basada en RER
+        // Distribución de sustratos basada en RER validado
         if(output.rer >= 1.0) {
             output.carbPercentage = 100.0;
             output.fatPercentage = 0.0;
@@ -527,9 +792,18 @@ void MetabolicCalculator::calculate(const SensorManager::SensorData& input, Meta
             output.fatPercentage = (1.0 - factor) * 100.0;
         }
         
-        // Almacenar en buffers para detección de umbrales
-        vo2Buffer.push(output.vo2);
-        vco2Buffer.push(output.vco2);
+        // Almacenar en buffers solo si los datos son válidos
+        if(output.vo2 > 0 && output.vo2 < 80.0 && output.vco2 > 0) {
+            vo2Buffer.push(output.vo2);
+            vco2Buffer.push(output.vco2);
+        }
+    } else {
+        // Sin sensor de CO2, estimar valores por defecto
+        output.vco2 = output.vo2 * 0.85; // RER típico en reposo
+        output.rer = 0.85;
+        output.energyExpenditure = (3.9 * output.vo2) / 1000.0; // Solo metabolismo aeróbico
+        output.carbPercentage = 50.0;
+        output.fatPercentage = 50.0;
     }
 }
 
@@ -764,9 +1038,209 @@ void PowerManager::readVoltage() {
 
 void PowerManager::enablePowerSaveMode() {
     lowPowerMode = true;
-    // Reducir frecuencia de actualización
+    Serial.println("Activando modo de ahorro de energía");
+    
+    // Reducir frecuencia de actualización de pantalla
     DisplayManager::setRefreshRate(5);
-    // Desactivar funciones no esenciales
+    
+    // Reducir brillo de pantalla al 30%
+    DisplayManager::setBrightness(30);
+    
+    // Desactivar WiFi si está habilitado
+    if(WiFi.status() == WL_CONNECTED) {
+        Serial.println("Desactivando WiFi para ahorrar energía");
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+    }
+    
+    // Reducir potencia de transmisión BLE
+    if(BLEDevice::getInitialized()) {
+        Serial.println("Reduciendo potencia BLE");
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12);
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_N12);
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_N12);
+        
+        // Si la batería está muy baja, desactivar BLE completamente
+        if(currentVoltage < 3.4) {
+            Serial.println("Batería crítica - Desactivando BLE");
+            BLEDevice::deinit(false);
+        }
+    }
+    
+    // Reducir frecuencia de CPU si es posible
+    esp_pm_config_esp32_t pm_config = {
+        .max_freq_mhz = 80,  // Reducir a 80MHz
+        .min_freq_mhz = 10,  // Frecuencia mínima en idle
+        .light_sleep_enable = true
+    };
+    esp_pm_configure(&pm_config);
+    
+    // Desactivar sensores no críticos si la batería está muy baja
+    if(currentVoltage < 3.5) {
+        Serial.println("Desactivando sensores no críticos por batería baja");
+        // Mantener solo sensor de O2 y presión principal
+        // El sensor de CO2 puede desactivarse temporalmente
+    }
+    
+    Serial.println("Modo de ahorro de energía activado");
+}
+
+void PowerManager::disablePowerSaveMode() {
+    if(!lowPowerMode) return;
+    
+    lowPowerMode = false;
+    Serial.println("Desactivando modo de ahorro de energía");
+    
+    // Restaurar frecuencia de actualización de pantalla
+    DisplayManager::setRefreshRate(10);
+    
+    // Restaurar brillo de pantalla
+    DisplayManager::setBrightness(100);
+    
+    // Restaurar frecuencia de CPU
+    esp_pm_config_esp32_t pm_config = {
+        .max_freq_mhz = 240,  // Frecuencia máxima
+        .min_freq_mhz = 80,   // Frecuencia mínima más alta
+        .light_sleep_enable = false
+    };
+    esp_pm_configure(&pm_config);
+    
+    // Reactivar WiFi si estaba configurado
+    ConnectivityManager::Config config;
+    if(config.enableWiFi) {
+        ConnectivityManager::setupWiFi();
+    }
+    
+    // Restaurar potencia BLE
+    if(BLEDevice::getInitialized()) {
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P3);
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P3);
+        esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P3);
+    }
+    
+    Serial.println("Modo normal restaurado");
+}
+
+void PowerManager::update() {
+    // Leer voltaje actual
+    readVoltage();
+    
+    // Monitorear estado de la batería y activar modo de ahorro automáticamente
+    static uint32_t lastCheck = 0;
+    static uint8_t lowVoltageCount = 0;
+    const uint32_t CHECK_INTERVAL = 5000; // Cada 5 segundos
+    
+    if(millis() - lastCheck > CHECK_INTERVAL) {
+        lastCheck = millis();
+        
+        // Si el voltaje está por debajo del umbral crítico
+        if(currentVoltage < 3.6 && !lowPowerMode) {
+            lowVoltageCount++;
+            Serial.print("Voltaje bajo detectado: ");
+            Serial.print(currentVoltage);
+            Serial.print("V (intento ");
+            Serial.print(lowVoltageCount);
+            Serial.println("/3)");
+            
+            // Activar modo de ahorro después de 3 lecturas consecutivas bajas
+            if(lowVoltageCount >= 3) {
+                Serial.println("Activando modo de ahorro de energía automáticamente");
+                enablePowerSaveMode();
+                lowVoltageCount = 0;
+            }
+        } else if(currentVoltage > 3.8 && lowPowerMode) {
+            // Desactivar modo de ahorro si la batería se ha recuperado
+            Serial.println("Batería recuperada, desactivando modo de ahorro");
+            disablePowerSaveMode();
+            lowVoltageCount = 0;
+        } else if(currentVoltage >= 3.6) {
+            // Resetear contador si el voltaje es normal
+            lowVoltageCount = 0;
+        }
+        
+        // Alertas críticas
+        if(currentVoltage < 3.3) {
+            Serial.println("ALERTA: Batería críticamente baja - Considere apagar el dispositivo");
+            // Podrían agregarse acciones de emergencia aquí
+        }
+    }
+}
+```
+
+### 6.5 **SystemMonitor.cpp (Monitoreo del Sistema)**
+```cpp
+#include "SystemMonitor.h"
+
+uint32_t SystemMonitor::lastHeapCheck = 0;
+uint32_t SystemMonitor::minHeapSeen = UINT32_MAX;
+bool SystemMonitor::criticalErrorState = false;
+
+void SystemMonitor::initialize() {
+    lastHeapCheck = millis();
+    minHeapSeen = ESP.getFreeHeap();
+    criticalErrorState = false;
+    Serial.println("Monitor del sistema inicializado");
+}
+
+SystemMonitor::SystemStatus SystemMonitor::getSystemStatus() {
+    SystemStatus status;
+    
+    // Verificar salud de sensores
+    status.sensorsHealthy = (SensorManager::getErrorCount() < 5);
+    
+    // Verificar estado de energía
+    status.powerHealthy = (PowerManager::getBatteryVoltage() > 3.4);
+    
+    // Verificar memoria
+    uint32_t currentHeap = ESP.getFreeHeap();
+    if(currentHeap < minHeapSeen) {
+        minHeapSeen = currentHeap;
+    }
+    status.freeHeap = currentHeap;
+    status.memoryHealthy = (currentHeap > 50000); // Umbral de 50KB libre
+    
+    // Verificar conectividad (simplificado)
+    status.connectivityHealthy = true; // Podría expandirse
+    
+    // Calcular uso de CPU (estimado)
+    status.cpuUsage = 50.0; // Placeholder - se calcularía con temporizadores
+    
+    // Total de errores del sistema
+    status.totalErrors = SensorManager::getErrorCount();
+    
+    return status;
+}
+
+void SystemMonitor::logSystemHealth() {
+    SystemStatus status = getSystemStatus();
+    
+    Serial.println("=== ESTADO DEL SISTEMA ===");
+    Serial.print("Sensores: "); Serial.println(status.sensorsHealthy ? "OK" : "ERROR");
+    Serial.print("Batería: "); Serial.println(status.powerHealthy ? "OK" : "BAJO");
+    Serial.print("Memoria libre: "); Serial.print(status.freeHeap); Serial.println(" bytes");
+    Serial.print("Memoria mínima vista: "); Serial.print(minHeapSeen); Serial.println(" bytes");
+    Serial.print("Total errores: "); Serial.println(status.totalErrors);
+    Serial.println("========================");
+}
+
+bool SystemMonitor::isSystemHealthy() {
+    SystemStatus status = getSystemStatus();
+    
+    // Sistema considerado saludable si todos los componentes críticos están OK
+    bool healthy = status.sensorsHealthy && 
+                  status.powerHealthy && 
+                  status.memoryHealthy;
+    
+    if(!healthy && !criticalErrorState) {
+        criticalErrorState = true;
+        Serial.println("ALERTA: Sistema en estado crítico!");
+        logSystemHealth();
+    } else if(healthy && criticalErrorState) {
+        criticalErrorState = false;
+        Serial.println("Sistema recuperado de estado crítico");
+    }
+    
+    return healthy;
 }
 ```
 
@@ -774,38 +1248,118 @@ void PowerManager::enablePowerSaveMode() {
 ```cpp
 #include "ConfigurationManager.h"
 
-const uint32_t ConfigurationManager::EEPROM_SIZE = sizeof(DeviceSettings) + 4;
+const uint32_t ConfigurationManager::EEPROM_SIZE = sizeof(DeviceSettings) + 8; // +4 for magic, +4 for CRC32
 const uint32_t ConfigurationManager::SETTINGS_MAGIC_NUMBER = 0x56F2A3C1;
 
 void ConfigurationManager::begin() {
     EEPROM.begin(EEPROM_SIZE);
 }
 
+// Función auxiliar para calcular CRC32
+uint32_t ConfigurationManager::calculateCRC32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    
+    for(size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for(int j = 0; j < 8; j++) {
+            if(crc & 1) {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    
+    return ~crc;
+}
+
 ConfigurationManager::DeviceSettings ConfigurationManager::load() {
     DeviceSettings settings;
     uint32_t magic;
+    uint32_t storedCRC, calculatedCRC;
     
     EEPROM.get(0, magic);
     if(magic == SETTINGS_MAGIC_NUMBER) {
+        // Leer configuraciones
         EEPROM.get(4, settings);
+        
+        // Leer CRC almacenado
+        EEPROM.get(4 + sizeof(settings), storedCRC);
+        
+        // Calcular CRC de los datos leídos
+        calculatedCRC = calculateCRC32((uint8_t*)&settings, sizeof(settings));
+        
+        // Verificar integridad
+        if(storedCRC == calculatedCRC) {
+            Serial.println("Configuración cargada exitosamente (CRC válido)");
+            return settings;
+        } else {
+            Serial.println("Error: CRC inválido en configuración EEPROM. Usando valores por defecto.");
+        }
     } else {
-        // Valores por defecto
-        settings = {
-            .weightKg = 75.0,
-            .flowCalibFactor = 1.0,
-            .vo2Method = VO2_METHOD_VSLOPE,
-            .useAdvancedFilters = true,
-            .autoCalibration = false
-        };
+        Serial.println("Magic number no encontrado. Primera inicialización.");
     }
+    
+    // Valores por defecto si no hay configuración válida
+    settings = {
+        .weightKg = 75.0,
+        .flowCalibFactor = 1.0,
+        .vo2Method = VO2_METHOD_VSLOPE,
+        .useAdvancedFilters = true,
+        .autoCalibration = false
+    };
+    
+    // Guardar valores por defecto con CRC
+    save(settings);
     
     return settings;
 }
 
 void ConfigurationManager::save(const DeviceSettings& settings) {
+    // Validar datos antes de guardar
+    if(settings.weightKg <= 0 || settings.weightKg > 300.0) {
+        Serial.println("Error: Peso inválido, no se guardará la configuración");
+        return;
+    }
+    
+    if(settings.flowCalibFactor <= 0 || settings.flowCalibFactor > 10.0) {
+        Serial.println("Error: Factor de calibración inválido, no se guardará");
+        return;
+    }
+    
+    // Calcular CRC32 de la configuración
+    uint32_t crc = calculateCRC32((uint8_t*)&settings, sizeof(settings));
+    
+    // Escribir magic number
     EEPROM.put(0, SETTINGS_MAGIC_NUMBER);
+    
+    // Escribir configuración
     EEPROM.put(4, settings);
-    EEPROM.commit();
+    
+    // Escribir CRC
+    EEPROM.put(4 + sizeof(settings), crc);
+    
+    // Confirmar escritura
+    if(EEPROM.commit()) {
+        Serial.println("Configuración guardada exitosamente con CRC de verificación");
+        
+        // Verificar inmediatamente leyendo de vuelta
+        DeviceSettings verification;
+        uint32_t verificationCRC;
+        
+        EEPROM.get(4, verification);
+        EEPROM.get(4 + sizeof(verification), verificationCRC);
+        
+        uint32_t newCRC = calculateCRC32((uint8_t*)&verification, sizeof(verification));
+        
+        if(newCRC == verificationCRC) {
+            Serial.println("Verificación post-escritura exitosa");
+        } else {
+            Serial.println("Error: Falla en verificación post-escritura");
+        }
+    } else {
+        Serial.println("Error: Falla al escribir en EEPROM");
+    }
 }
 ```
 

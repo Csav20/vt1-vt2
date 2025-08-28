@@ -19,6 +19,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <string.h>      // for memset
+#include <math.h>        // for isnan, isinf, sin, etc.
 #define ADC_EN 14        // ADC_EN is the ADC detection enable port
 #define ADC_PIN 34
 int vref = 1100;
@@ -106,6 +108,9 @@ uint32_t calculateEEPROMChecksum(void* data, size_t size);
 bool verifyEEPROMIntegrity();
 void saveSettingsWithChecksum();
 bool loadSettingsWithChecksum();
+
+// Función de diagnóstico del sistema mejorado
+void runSystemDiagnostics();
 
 // ============================================================================
 // CLASES DE FILTROS OPTIMIZADAS PARA PROCESAMIENTO EN TIEMPO REAL
@@ -368,6 +373,9 @@ Omron_D6FPH mySensor;
 DFRobot_OxygenSensor Oxygen;
 #define COLLECT_NUMBER 10           // collect number, the collection range is 1-100.
 #define Oxygen_IICAddress ADDRESS_3 // I2C  label for o2 address
+
+// CO2 sensor instance
+SCD30 scd30;
 
 // Defines button state for adding wt
 const int buttonPin1 = 0;
@@ -1296,6 +1304,55 @@ bool loadSettingsWithChecksum() {
 // FUNCIONES OPTIMIZADAS CON PROTECCIÓN MUTEX Y VALIDACIÓN
 // ============================================================================
 
+/**
+ * Ejecuta diagnósticos completos del sistema mejorado
+ * Verifica integridad EEPROM, estado de sensores y sistema de errores
+ */
+void runSystemDiagnostics() {
+    Serial.println("\n=== DIAGNÓSTICO SISTEMA VO2SMART ===");
+    
+    // Verificar integridad EEPROM
+    Serial.print("Integridad EEPROM: ");
+    if (verifyEEPROMIntegrity()) {
+        Serial.println("OK");
+    } else {
+        Serial.println("FALLO - Datos corruptos detectados");
+    }
+    
+    // Verificar estado de mutex
+    Serial.print("Sistema Mutex: ");
+    bool mutexOK = (sensorDataMutex != NULL && settingsMutex != NULL && 
+                   errorLogMutex != NULL && calculationMutex != NULL);
+    Serial.println(mutexOK ? "OK" : "FALLO");
+    
+    // Verificar sistema de logging de errores
+    Serial.print("Sistema Error Log: ");
+    Serial.println(errorLog.initialized ? "ACTIVO" : "INACTIVO");
+    if (errorLog.initialized) {
+        Serial.printf("  Errores registrados: %d\n", errorLog.totalErrors);
+        Serial.printf("  Errores O2: %d, CO2: %d, Presión: %d, Temp: %d\n",
+                     sensorErrors.o2Errors, sensorErrors.co2Errors,
+                     sensorErrors.pressureErrors, sensorErrors.temperatureErrors);
+    }
+    
+    // Verificar configuración cargada
+    Serial.println("Configuración actual:");
+    Serial.printf("  Peso: %.1f kg\n", settings.weightkg);
+    Serial.printf("  Factor corrección: %.3f\n", settings.correctionSensor);
+    Serial.printf("  CO2 activo: %s\n", settings.co2_on ? "SÍ" : "NO");
+    
+    // Verificar memoria disponible
+    Serial.printf("Memoria libre: %d bytes\n", ESP.getFreeHeap());
+    
+    // Test rápido de filtros
+    Serial.println("Test filtros:");
+    float testValue = 20.5;
+    Serial.printf("  Kalman O2: %.3f -> %.3f\n", testValue, filtroO2.filtrar(testValue));
+    Serial.printf("  Kalman Presión: %.3f -> %.3f\n", testValue, filtroPresion.filtrar(testValue));
+    
+    Serial.println("=== FIN DIAGNÓSTICO ===\n");
+}
+
 // Function to display the main menu
 // Removed duplicate definition of showMainMenu()
 
@@ -1355,6 +1412,9 @@ void setup() {
     // Log del estado inicial del sistema
     Serial.printf("Sistema inicializado - Memoria libre: %d bytes\n", ESP.getFreeHeap());
     Serial.printf("Versión de configuración: %d\n", settings.version);
+    
+    // Ejecutar diagnósticos del sistema mejorado
+    runSystemDiagnostics();
     
     // Mostrar menú principal
     showCarouselMenu();

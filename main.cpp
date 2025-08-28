@@ -58,12 +58,15 @@ public:
     static bool validateSensorData(const SensorData& data);
     static void calibrateO2(float reference = 20.93);
     static void calibrateFlow(float reference = 1.0);
+    static bool recoverFromError();
+    static uint32_t getErrorCount();
     
 private:
     static DFRobot_OxygenSensor oxygenSensor;
     static Omron_D6FPH pressureSensor;
     static Adafruit_BMP280 bmp;
     static bool sensorsInitialized;
+    static uint32_t errorCount;
 };
 ```
 
@@ -255,7 +258,36 @@ private:
 };
 ```
 
-### 9. **Módulo de Tareas (Implementación)**
+### 9. **Módulo de Monitoreo del Sistema**
+```cpp
+// SystemMonitor.h
+#pragma once
+
+class SystemMonitor {
+public:
+    struct SystemStatus {
+        bool sensorsHealthy;
+        bool powerHealthy;
+        bool memoryHealthy;
+        bool connectivityHealthy;
+        float cpuUsage;
+        uint32_t freeHeap;
+        uint32_t totalErrors;
+    };
+    
+    static void initialize();
+    static SystemStatus getSystemStatus();
+    static void logSystemHealth();
+    static bool isSystemHealthy();
+    
+private:
+    static uint32_t lastHeapCheck;
+    static uint32_t minHeapSeen;
+    static bool criticalErrorState;
+};
+```
+
+### 10. **Módulo de Tareas (Implementación)**
 ```cpp
 // CoreManager.cpp
 #include "VO2Smart_Core.h"
@@ -304,8 +336,12 @@ void CoreManager::sensorTask(void* params) {
                 sensorErrorCount++;
                 if(sensorErrorCount >= MAX_SENSOR_ERRORS) {
                     Serial.println("Error: Demasiados errores de sensor consecutivos");
-                    // Reiniciar sensores si es necesario
-                    SensorManager::begin();
+                    // Usar el mecanismo de recuperación robusto
+                    bool recovered = SensorManager::recoverFromError();
+                    if(!recovered && SensorManager::getErrorCount() > 10) {
+                        Serial.println("Error crítico: Sensores no responden - Modo degradado");
+                        // En modo degradado, usar solo datos simulados o últimos válidos
+                    }
                     sensorErrorCount = 0;
                 }
             }
@@ -334,6 +370,8 @@ void CoreManager::uiTask(void* params) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     uint32_t displayErrorCount = 0;
     const uint32_t MAX_DISPLAY_ERRORS = 3;
+    uint32_t healthCheckCounter = 0;
+    const uint32_t HEALTH_CHECK_INTERVAL = 100; // Cada 10 segundos (100 * 100ms)
     
     while(true) {
         // UI tiene prioridad más alta, timeout más corto pero con reintentos
@@ -352,6 +390,28 @@ void CoreManager::uiTask(void* params) {
             }
         }
         
+        // Monitoreo periódico del sistema
+        healthCheckCounter++;
+        if(healthCheckCounter >= HEALTH_CHECK_INTERVAL) {
+            healthCheckCounter = 0;
+            
+            // Verificar salud del sistema
+            if(!SystemMonitor::isSystemHealthy()) {
+                Serial.println("Advertencia: Sistema en estado no óptimo");
+            }
+            
+            // Actualizar estado de energía
+            PowerManager::update();
+            
+            // Log periódico del estado (cada minuto)
+            static uint32_t logCounter = 0;
+            logCounter++;
+            if(logCounter >= 6) { // 6 * 10 segundos = 60 segundos
+                logCounter = 0;
+                SystemMonitor::logSystemHealth();
+            }
+        }
+        
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(100)); // 10Hz
     }
 }
@@ -367,10 +427,13 @@ void CoreManager::uiTask(void* params) {
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("Iniciando VO2Smart con mejoras de rendimiento...");
     
     // Inicializar subsistemas
     ConfigurationManager::begin();
     CoreManager::initialize();
+    SystemMonitor::initialize();
+    PowerManager::begin();
     
     // Configurar conectividad
     ConnectivityManager::Config config {
@@ -384,6 +447,9 @@ void setup() {
     
     // Configurar entradas de usuario
     UserInputManager::initialize(BUTTON_PIN1, BUTTON_PIN2);
+    
+    // Log inicial del estado del sistema
+    SystemMonitor::logSystemHealth();
     
     // Crear tareas principales
     CoreManager::createTasks();
@@ -453,6 +519,7 @@ DFRobot_OxygenSensor SensorManager::oxygenSensor;
 Omron_D6FPH SensorManager::pressureSensor;
 Adafruit_BMP280 SensorManager::bmp;
 bool SensorManager::sensorsInitialized = false;
+uint32_t SensorManager::errorCount = 0;
 
 bool SensorManager::begin() {
     if(sensorsInitialized) return true;
@@ -584,6 +651,29 @@ void SensorManager::calibrateO2(float reference) {
     ConfigurationManager::DeviceSettings settings = ConfigurationManager::load();
     settings.flowCalibFactor = factor;
     ConfigurationManager::save(settings);
+}
+
+bool SensorManager::recoverFromError() {
+    Serial.println("Intentando recuperación de sensores...");
+    
+    // Reinicializar todos los sensores
+    sensorsInitialized = false;
+    delay(1000); // Esperar para estabilización
+    
+    bool recovery = begin();
+    if(recovery) {
+        Serial.println("Recuperación de sensores exitosa");
+        errorCount = 0; // Reset error counter on successful recovery
+    } else {
+        Serial.println("Falla en recuperación de sensores");
+        errorCount++;
+    }
+    
+    return recovery;
+}
+
+uint32_t SensorManager::getErrorCount() {
+    return errorCount;
 }
 ```
 
@@ -1029,6 +1119,128 @@ void PowerManager::disablePowerSaveMode() {
     }
     
     Serial.println("Modo normal restaurado");
+}
+
+void PowerManager::update() {
+    // Leer voltaje actual
+    readVoltage();
+    
+    // Monitorear estado de la batería y activar modo de ahorro automáticamente
+    static uint32_t lastCheck = 0;
+    static uint8_t lowVoltageCount = 0;
+    const uint32_t CHECK_INTERVAL = 5000; // Cada 5 segundos
+    
+    if(millis() - lastCheck > CHECK_INTERVAL) {
+        lastCheck = millis();
+        
+        // Si el voltaje está por debajo del umbral crítico
+        if(currentVoltage < 3.6 && !lowPowerMode) {
+            lowVoltageCount++;
+            Serial.print("Voltaje bajo detectado: ");
+            Serial.print(currentVoltage);
+            Serial.print("V (intento ");
+            Serial.print(lowVoltageCount);
+            Serial.println("/3)");
+            
+            // Activar modo de ahorro después de 3 lecturas consecutivas bajas
+            if(lowVoltageCount >= 3) {
+                Serial.println("Activando modo de ahorro de energía automáticamente");
+                enablePowerSaveMode();
+                lowVoltageCount = 0;
+            }
+        } else if(currentVoltage > 3.8 && lowPowerMode) {
+            // Desactivar modo de ahorro si la batería se ha recuperado
+            Serial.println("Batería recuperada, desactivando modo de ahorro");
+            disablePowerSaveMode();
+            lowVoltageCount = 0;
+        } else if(currentVoltage >= 3.6) {
+            // Resetear contador si el voltaje es normal
+            lowVoltageCount = 0;
+        }
+        
+        // Alertas críticas
+        if(currentVoltage < 3.3) {
+            Serial.println("ALERTA: Batería críticamente baja - Considere apagar el dispositivo");
+            // Podrían agregarse acciones de emergencia aquí
+        }
+    }
+}
+```
+
+### 6.5 **SystemMonitor.cpp (Monitoreo del Sistema)**
+```cpp
+#include "SystemMonitor.h"
+
+uint32_t SystemMonitor::lastHeapCheck = 0;
+uint32_t SystemMonitor::minHeapSeen = UINT32_MAX;
+bool SystemMonitor::criticalErrorState = false;
+
+void SystemMonitor::initialize() {
+    lastHeapCheck = millis();
+    minHeapSeen = ESP.getFreeHeap();
+    criticalErrorState = false;
+    Serial.println("Monitor del sistema inicializado");
+}
+
+SystemMonitor::SystemStatus SystemMonitor::getSystemStatus() {
+    SystemStatus status;
+    
+    // Verificar salud de sensores
+    status.sensorsHealthy = (SensorManager::getErrorCount() < 5);
+    
+    // Verificar estado de energía
+    status.powerHealthy = (PowerManager::getBatteryVoltage() > 3.4);
+    
+    // Verificar memoria
+    uint32_t currentHeap = ESP.getFreeHeap();
+    if(currentHeap < minHeapSeen) {
+        minHeapSeen = currentHeap;
+    }
+    status.freeHeap = currentHeap;
+    status.memoryHealthy = (currentHeap > 50000); // Umbral de 50KB libre
+    
+    // Verificar conectividad (simplificado)
+    status.connectivityHealthy = true; // Podría expandirse
+    
+    // Calcular uso de CPU (estimado)
+    status.cpuUsage = 50.0; // Placeholder - se calcularía con temporizadores
+    
+    // Total de errores del sistema
+    status.totalErrors = SensorManager::getErrorCount();
+    
+    return status;
+}
+
+void SystemMonitor::logSystemHealth() {
+    SystemStatus status = getSystemStatus();
+    
+    Serial.println("=== ESTADO DEL SISTEMA ===");
+    Serial.print("Sensores: "); Serial.println(status.sensorsHealthy ? "OK" : "ERROR");
+    Serial.print("Batería: "); Serial.println(status.powerHealthy ? "OK" : "BAJO");
+    Serial.print("Memoria libre: "); Serial.print(status.freeHeap); Serial.println(" bytes");
+    Serial.print("Memoria mínima vista: "); Serial.print(minHeapSeen); Serial.println(" bytes");
+    Serial.print("Total errores: "); Serial.println(status.totalErrors);
+    Serial.println("========================");
+}
+
+bool SystemMonitor::isSystemHealthy() {
+    SystemStatus status = getSystemStatus();
+    
+    // Sistema considerado saludable si todos los componentes críticos están OK
+    bool healthy = status.sensorsHealthy && 
+                  status.powerHealthy && 
+                  status.memoryHealthy;
+    
+    if(!healthy && !criticalErrorState) {
+        criticalErrorState = true;
+        Serial.println("ALERTA: Sistema en estado crítico!");
+        logSystemHealth();
+    } else if(healthy && criticalErrorState) {
+        criticalErrorState = false;
+        Serial.println("Sistema recuperado de estado crítico");
+    }
+    
+    return healthy;
 }
 ```
 

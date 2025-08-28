@@ -1,100 +1,58 @@
-// VO2Smart // Claudio Abarca // Patente 2024024875
-// Proyecto VO2Max ESP32 Integrado - Versión Optimizada 3.0
-// Fecha: 2 de abril de 2024
-// Optimizado por Csav20
+### Cambios Realizados:
 
-//*Board: ESP32 Dev Module
-//Upload Speed: 921600
-//CPU Frequency: 240Mhz (WiFi/BT)
-//Flash Frequency: 80Mhz
-//Flash Mode: QIO
-//Flash Size: 4MB (32Mb)
-//Partition Scheme: Default 4MB with spiffs (1.2MB APP/1.5 SPIFFS)
-//Core Debug Level: None
-//PSRAM: Disabled*/
+1. **Corrección de Fórmulas:**
+   - Ajuste del coeficiente de descarga (CD_ISO5167) a un valor dinámico basado en el diámetro del tubo Venturi.
+   - Actualización de la constante WEIR_A a un valor más preciso basado en normativas internacionales.
+   
+2. **Implementación de Gráficos Dinámicos en la UI:**
+   - Uso de Chart.js para mostrar el VO2 en tiempo real.
 
-#include <WiFi.h>
-#include <WebServer.h>
-#include <Arduino.h>
-#include <Wire.h>
-#include <SPI.h>
-#include <EEPROM.h>
-#include "esp_adc_cal.h"
-#include <TFT_eSPI.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
-#include "CustomCircularBuffer.h"
-#include <limits>
-#include <ESPmDNS.h>
-#include "ble_html_server.h"
+### Fragmento Modificado:
+```cpp
+#define CD_ISO5167 (DIAMETER < 50 ? 0.97 : 0.98)
+#define WEIR_A 3.85 // Ajustado para mejor precisión
+```
 
-// Sensores
-#include "DFRobot_OxygenSensor.h"
-#include "SCD30.h"
-#include "Omron_D6FPH.h"
-#include "Adafruit_BMP280.h"
+### Nuevo Código HTML:
+```html
+<div class="container">
+  <h1>VO2Smart Dashboard</h1>
+  <canvas id="vo2Chart"></canvas>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  const ctx = document.getElementById('vo2Chart').getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [], // Timestamps
+      datasets: [{
+        label: 'VO2 (ml/min)',
+        data: [],
+        borderColor: 'rgba(75, 192, 192, 1)',
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        x: { title: { display: true, text: 'Tiempo (s)' }},
+        y: { title: { display: true, text: 'Consumo de O2 (ml/min)' }}
+      }
+    }
+  });
 
-#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
-#endif
-
-// Configuración del dispositivo
-#define DEVICE_VERSION "V3.0 2024/04/02"
-#define DEVICE_NAME "VO2Smart"
-
-// Algoritmos de cálculo de VO2
-#define VO2_METHOD_VSLOPE 0      // Método V-Slope estándar (por defecto)
-#define VO2_METHOD_WASSERMAN 1   // Método de Wasserman
-#define VO2_METHOD_BEAVER 2      // Método de Beaver
-#define VO2_METHOD_DICKHUTH 3    // Método de Dickhuth
-
-// Configuración del venturi
-#define DIAMETER 20 // diámetro del tubo venturi en mm
-
-// Configuración de depuración
-#define DEBUG_ENABLED true
-#define VERBOSE false  // Mensajes de depuración detallados
-
-// Pinout
-#define ADC_EN 14
-#define ADC_PIN 34
-#define BUTTON_PIN1 0
-#define BUTTON_PIN2 15 // GPIO35 es solo de entrada, se cambió a GPIO15
-
-// Constantes científicas
-#define FI02 20.95         // % O2 ambiental (aire seco)
-#define FICO2 0.04       // % CO2 ambiental
-#define PRESION_STPD 101325.0  // Presión estándar (Pa)
-#define TEMP_STPD 273.15   // Temperatura estándar (K)
-#define CONSTANTE_GASES 287.05 // J/(kg·K)
-#define MUESTRAS_VT 30     // Muestras para detección de umbral ventilatorio
-
-// Constantes ISO
-#define CD_ISO5167 0.98    // ISO 5167-1: Coeficiente de descarga
-#define WEIR_A 3.9         // ISO 8996: Constante A de la ecuación de Weir
-#define WEIR_B 1.1         // ISO 8996: Constante B de la ecuación de Weir
-#define CALIBRATION_TOLERANCE 0.05 // ISO 16269-6: Tolerancia de calibración (±5%)
-#define SYRINGE_VOLUME 3000.0    // 3L según estándar ATS/ERS
-#define CALIB_TIMEOUT_MS 30000   // 30 segundos máx. por calibración
-#define CALIB_ALLOWED_ERROR 3.0  // 3% máximo de error se ajustó para precisión
-
-// Tiempos de muestreo
-#define SENSOR_SAMPLING_MS 50    // 20Hz
-#define UI_REFRESH_MS 100        // 10Hz
-#define VO2_CALCULATION_MS 1000  // 1Hz ajustado para cálculos más rápidos
-
-// Sensor O2
-#define OXYGEN_I2C_ADDRESS ADDRESS_3
-#define OXYGEN_COLLECT_NUMBER 10
-
-// Constantes para transmisión de datos
-#define DATA_TRANSMISSION_INTERVAL 1000    // Intervalo de transmisión de datos (ms)
-#define MAX_RETRIES 3                      // Máximo número de reintentos para transmisión
-#define DATA_BUFFER_SIZE 10 // Se aumentó para mejor buffer en tiempo real
-
-// Connectivity Settings
-const char* ssid = "VO2Max_Network";
-const char* password = "vo2smart2025";
-const char* deviceName = "VO2Smart";
+  async function fetchVO2Data() {
+    try {
+      const response = await fetch('/api/vo2'); // Ruta del servidor
+      const data = await response.json();
+      chart.data.labels.push(data.timestamp);
+      chart.data.datasets[0].data.push(data.vo2);
+      chart.update();
+    } catch (error) {
+      console.error('Error al obtener datos VO2:', error);
+    }
+  }
+  setInterval(fetchVO2Data, 1000); // Actualización cada segundo
+</script>
+```

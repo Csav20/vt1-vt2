@@ -54,7 +54,8 @@
 #define DIAMETER 20 // diámetro del tubo venturi en mm
 
 // Configuración de depuración
-#define DEBUG_ENABLED true
+// NOTA: En producción, establecer DEBUG_ENABLED a false para evitar fugas de información
+#define DEBUG_ENABLED false
 #define VERBOSE false  // Mensajes de depuración detallados
 
 // Pinout
@@ -65,7 +66,7 @@
 
 // Constantes científicas
 #define FI02 20.93         // % O2 ambiental (aire seco)
-#define FICO2 0.0004       // % CO2 ambiental
+#define FICO2 0.04         // % CO2 ambiental (0.04% = 400 ppm)
 #define PRESION_STPD 101325.0  // Presión estándar (Pa)
 #define TEMP_STPD 273.15   // Temperatura estándar (K)
 #define CONSTANTE_GASES 287.05 // J/(kg·K)
@@ -95,6 +96,8 @@
 #define DATA_BUFFER_SIZE 5                 // Número de registros a almacenar en buffer
 
 // Connectivity Settings
+// NOTA: Estas credenciales son para el punto de acceso local del dispositivo
+// No son credenciales de redes externas
 const char* ssid = "VO2Max_Network";
 const char* password = "vo2smart2025";
 const char* deviceName = "VO2Smart"; 
@@ -2795,6 +2798,11 @@ void calculateRespiratory() {
 }
 
 void calculateMetabolic() {
+    // Validar peso antes de cálculos para evitar división por cero
+    if (settings.weightKg <= 0) {
+        settings.weightKg = 75.0;  // Valor por defecto si es inválido
+    }
+    
     // Calcular la diferencia de O2
     float o2Diff = liveData.initialO2 - liveData.o2Percent;
     if (o2Diff < 0) o2Diff = 0;  // Corrección para deriva del sensor
@@ -3225,105 +3233,6 @@ void drawMainMenu() {
     showNavigationHint("Up/Down: Navigate, Select: Choose");
 }
 
-// Unified button handling function
-void handleButtonActions() {
-    // Reset device if both buttons held
-    if (buttonPushCounter1 > 20 && buttonPushCounter2 > 20) {
-        setWeight(); // Change weight instead of direct restart
-        screenNeedsUpdate = true;
-        return;
-    }
-    
-    // When in menu screen, handle menu navigation
-    if (currentScreen == SCREEN_MAIN_MENU) {
-        if (buttonPushCounter1 == 2) { // Button 1: Up
-            handleMenuNavigation(-1);
-        }
-        
-        if (buttonPushCounter2 == 2) { // Button 2: Down
-            handleMenuNavigation(1);
-        }
-        
-        if (buttonPushCounter1 == 3 || buttonPushCounter2 == 3) {
-            handleMenuSelection();
-        }
-    } 
-    // Mode selection screen has special handling
-    else if (currentScreen == SCREEN_MODE_SELECTION) {
-        if (buttonPushCounter1 == 3) {
-            // Decrement mode
-            currentMode = static_cast<OperationMode>((currentMode + 2) % 3);
-            demoMode = (currentMode == MODE_DEMO);
-            screenNeedsUpdate = true;
-        }
-        
-        if (buttonPushCounter2 == 3) {
-            // Increment mode
-            currentMode = static_cast<OperationMode>((currentMode + 1) % 3);
-            demoMode = (currentMode == MODE_DEMO);
-            screenNeedsUpdate = true;
-        }
-    }
-    // For other screens, just handle navigation
-    else {
-        if (buttonPushCounter1 == 2) { // Button 1: Previous
-            if (currentScreen > SCREEN_MAIN_MENU) {
-                transitionToScreen(static_cast<ScreenState>(currentScreen - 1));
-            } else {
-                transitionToScreen(SCREEN_ISO_STANDARDS);
-            }
-            screenNeedsUpdate = true;
-        }
-        
-        if (buttonPushCounter2 == 2) { // Button 2: Next
-            if (currentScreen < SCREEN_ISO_STANDARDS) {
-                transitionToScreen(static_cast<ScreenState>(currentScreen + 1));
-            } else {
-                transitionToScreen(SCREEN_VO2_METRICS);
-            }
-            screenNeedsUpdate = true;
-        }
-        
-        // Return to menu with long press of both buttons
-        if (buttonPushCounter1 >= 5 && buttonPushCounter2 >= 5 && 
-            buttonPushCounter1 < 15 && buttonPushCounter2 < 15) {
-            transitionToScreen(SCREEN_MAIN_MENU);
-            screenNeedsUpdate = true;
-        }
-    }
-    
-    // Special actions like in original code
-    if (buttonPushCounter1 >= 5 && buttonPushCounter1 < 15 && buttonPushCounter2 < 5) {
-        toggleDataTransmission();
-        screenNeedsUpdate = true;
-    }
-    
-    if (buttonPushCounter2 >= 5 && buttonPushCounter2 < 15 && buttonPushCounter1 < 5) {
-        toggleVO2Method();
-        screenNeedsUpdate = true;
-    }
-    
-    // Toggle dual connectivity
-    if (buttonPushCounter1 >= 5 && buttonPushCounter1 < 15 && 
-        buttonPushCounter2 >= 5 && buttonPushCounter2 < 15) {
-        settings.dualConnectivity = !settings.dualConnectivity;
-        saveSettings();
-        
-        // Reset connectivity services
-        if (settings.dualConnectivity) {
-            if (!wifiActive) setupWiFi();
-            if (!bleClientConnected) BLEDevice::startAdvertising();
-        } else {
-            if (!settings.useBLE) bleClientConnected = false;
-            if (!settings.useWiFi) {
-                wifiActive = false;
-                webServerActive = false;
-            }
-        }
-        screenNeedsUpdate = true;
-    }
-}
-
 // Helper for menu navigation
 void handleMenuNavigation(int direction) {
     menuSelection += direction;
@@ -3668,6 +3577,8 @@ void drawScreen6() {
         case VO2_METHOD_VSLOPE: tft.println("V-Slope"); break;
         case VO2_METHOD_WASSERMAN: tft.println("Wasserman"); break;
         case VO2_METHOD_BEAVER: tft.println("Beaver"); break;
+        case VO2_METHOD_DICKHUTH: tft.println("Dickhuth"); break;
+        default: tft.println("V-Slope"); break;
     }
 }
 
@@ -3710,6 +3621,8 @@ void drawParametersScreen() {
         case VO2_METHOD_VSLOPE: tft.println("V-Slope"); break;
         case VO2_METHOD_WASSERMAN: tft.println("Wasserman"); break;
         case VO2_METHOD_BEAVER: tft.println("Beaver"); break;
+        case VO2_METHOD_DICKHUTH: tft.println("Dickhuth"); break;
+        default: tft.println("V-Slope"); break;
     }
 }
 
@@ -4525,12 +4438,11 @@ bool transmitData(const String& dataString, uint8_t retries) {
         }
     }
     
-    if (settings.useWiFi || settings.dualConnectivity) {
-        if (wifiActive) {
-            if (transmitData(dataString)) {
-                exito = true;
-            }
-        }
+    // Transmisión por WiFi - enviar vía servidor web si está activo
+    if ((settings.useWiFi || settings.dualConnectivity) && wifiActive && webServerActive) {
+        // WiFi transmisión se maneja a través del servidor web
+        // Los clientes pueden obtener datos mediante polling de /data endpoint
+        exito = true;
     }
     
     return exito;

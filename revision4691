@@ -66,7 +66,7 @@
 
 // Constantes científicas
 #define FI02 20.93         // % O2 ambiental (aire seco)
-#define FICO2 0.04         // % CO2 ambiental (0.04% = 400 ppm)
+#define FICO2 0.0004       // Fracción de CO2 ambiental (0.04% = 400 ppm)
 #define PRESION_STPD 101325.0  // Presión estándar (Pa)
 #define TEMP_STPD 273.15   // Temperatura estándar (K)
 #define CONSTANTE_GASES 287.05 // J/(kg·K)
@@ -2798,9 +2798,13 @@ void calculateRespiratory() {
 }
 
 void calculateMetabolic() {
-    // Validar peso antes de cálculos para evitar división por cero
-    if (settings.weightKg <= 0) {
-        settings.weightKg = 75.0;  // Valor por defecto si es inválido
+    // Usar peso local con validación para evitar división por cero
+    float weightKg = settings.weightKg;
+    if (weightKg <= 0) {
+        weightKg = 75.0;  // Valor por defecto si es inválido
+        if (DEBUG_ENABLED) {
+            Serial.println("Advertencia: peso inválido, usando valor por defecto (75 kg)");
+        }
     }
     
     // Calcular la diferencia de O2
@@ -2815,7 +2819,7 @@ void calculateMetabolic() {
         vo2Total = qpFilterVO2.update(vo2Total);
     }
     
-    liveData.vo2 = vo2Total / settings.weightKg;  // ml/min/kg
+    liveData.vo2 = vo2Total / weightKg;  // ml/min/kg
     
     // Actualizar VO2 máximo
     if (liveData.vo2 > liveData.vo2Max) {
@@ -2828,7 +2832,7 @@ void calculateMetabolic() {
         if (co2PercDiff < 0) co2PercDiff = 0;
         
         float vco2Total = liveData.volumeVEMean * liveData.airDensityBTPS / 1.292 * co2PercDiff * 10.0;
-        liveData.vco2 = vco2Total / settings.weightKg;
+        liveData.vco2 = vco2Total / weightKg;
         
         // ISO 8996: Calcular RER (cociente respiratorio) usando molaridad
         if (vo2Total > 0) {
@@ -4438,11 +4442,20 @@ bool transmitData(const String& dataString, uint8_t retries) {
         }
     }
     
-    // Transmisión por WiFi - enviar vía servidor web si está activo
+    // WiFi: Los datos se transmiten vía servidor web mediante el endpoint /data
+    // No se realiza transmisión activa aquí - los clientes obtienen datos mediante polling
+    // Solo marcamos como exitoso si hay una conexión BLE activa o si WiFi está configurado
+    // para que los datos estén disponibles vía web
     if ((settings.useWiFi || settings.dualConnectivity) && wifiActive && webServerActive) {
-        // WiFi transmisión se maneja a través del servidor web
-        // Los clientes pueden obtener datos mediante polling de /data endpoint
-        exito = true;
+        // Datos disponibles vía endpoint /data del servidor web
+        // No hay transmisión activa, pero los datos están accesibles
+        if (!exito) {
+            // Solo marcamos como "pendiente" si no hubo éxito BLE
+            // Los datos permanecen en el buffer para acceso vía web
+            if (DEBUG_ENABLED) {
+                Serial.println("Datos disponibles vía endpoint web /data");
+            }
+        }
     }
     
     return exito;

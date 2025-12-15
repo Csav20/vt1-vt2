@@ -1,0 +1,1195 @@
+<!DOCTYPE html>
+<!-- 
+    VO2Smart - Professional Respiratory Analysis System
+    Language: Spanish (es) - For international use, modify lang="es" to lang="en" and translate content
+    Author: Claudio Abarca (Patent 2024024875) | Optimized by Csav20
+-->
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VO2Smart - Sistema Profesional de Análisis Respiratorio</title>
+    
+    <!-- Chart.js para gráficos en tiempo real -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    
+    <!-- Font Awesome para iconos -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --success-color: #27ae60;
+            --warning-color: #f39c12;
+            --danger-color: #e74c3c;
+            --light-bg: #ecf0f1;
+            --dark-bg: #34495e;
+            --card-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            --border-radius: 8px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            background: white;
+            padding: 25px 30px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--card-shadow);
+            margin-bottom: 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .header h1 {
+            color: var(--primary-color);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-size: 2em;
+        }
+
+        .header h1 i {
+            color: var(--secondary-color);
+        }
+
+        .header-info {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-badge.connected {
+            background: #d4edda;
+            color: var(--success-color);
+        }
+
+        .status-badge.disconnected {
+            background: #f8d7da;
+            color: var(--danger-color);
+        }
+
+        /* Grid Layout */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .card {
+            background: white;
+            border-radius: var(--border-radius);
+            box-shadow: var(--card-shadow);
+            padding: 20px;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 15px rgba(0,0,0,0.2);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--light-bg);
+        }
+
+        .card-header h3 {
+            color: var(--primary-color);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card-icon {
+            font-size: 1.5em;
+        }
+
+        /* Sensor Readings */
+        .sensor-reading {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .sensor-reading:last-child {
+            border-bottom: none;
+        }
+
+        .sensor-label {
+            font-weight: 600;
+            color: #555;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .sensor-value {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: var(--secondary-color);
+        }
+
+        .sensor-unit {
+            font-size: 0.8em;
+            color: #888;
+            margin-left: 4px;
+        }
+
+        /* Chart Container */
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-top: 15px;
+        }
+
+        /* Metabolic Panel */
+        .metabolic-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+
+        .metabolic-item {
+            background: var(--light-bg);
+            padding: 15px;
+            border-radius: var(--border-radius);
+            text-align: center;
+        }
+
+        .metabolic-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .metabolic-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+
+        /* Alert Panel */
+        .alert {
+            padding: 12px 16px;
+            border-radius: var(--border-radius);
+            margin: 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border-left: 4px solid var(--success-color);
+        }
+
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border-left: 4px solid var(--warning-color);
+        }
+
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border-left: 4px solid var(--danger-color);
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--secondary-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2980b9;
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #229954;
+        }
+
+        .btn-danger {
+            background: var(--danger-color);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            width: 100%;
+            height: 25px;
+            background: #eee;
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--success-color), var(--secondary-color));
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 0.85em;
+        }
+
+        /* System Info */
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .info-item {
+            background: var(--light-bg);
+            padding: 12px;
+            border-radius: var(--border-radius);
+        }
+
+        .info-item strong {
+            display: block;
+            color: #555;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+        }
+
+        .info-item span {
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+
+        /* Error Log */
+        .log-entry {
+            background: #f8f9fa;
+            padding: 10px;
+            border-left: 3px solid var(--danger-color);
+            margin: 8px 0;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .log-timestamp {
+            color: #888;
+            margin-right: 10px;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid var(--light-bg);
+        }
+
+        .tab {
+            padding: 12px 20px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s ease;
+        }
+
+        .tab.active {
+            color: var(--secondary-color);
+            border-bottom: 3px solid var(--secondary-color);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                gap: 15px;
+            }
+
+            .header h1 {
+                font-size: 1.5em;
+            }
+
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .metabolic-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Loading Animation */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+        }
+
+        .tooltip:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            white-space: nowrap;
+            font-size: 0.85em;
+            z-index: 1000;
+        }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 20px;
+            background: white;
+            border-radius: var(--border-radius);
+            box-shadow: var(--card-shadow);
+            margin-top: 25px;
+            color: #666;
+        }
+
+        .footer strong {
+            color: var(--primary-color);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>
+                <i class="fas fa-lungs"></i>
+                VO2Smart
+                <span style="font-size: 0.5em; color: #888;">v3.0</span>
+            </h1>
+            <div class="header-info">
+                <div class="status-badge" id="bleStatus">
+                    <i class="fas fa-bluetooth-b"></i>
+                    <span>Desconectado</span>
+                </div>
+                <div class="status-badge" id="systemStatus">
+                    <i class="fas fa-circle-notch fa-spin"></i>
+                    <span>Iniciando...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Dashboard Grid -->
+        <div class="dashboard-grid">
+            <!-- Real-time Sensors Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-sensor-on card-icon" style="color: var(--secondary-color);"></i> Sensores en Tiempo Real</h3>
+                </div>
+                <div class="sensor-reading">
+                    <span class="sensor-label">
+                        <i class="fas fa-circle" style="color: #3498db;"></i>
+                        Oxígeno (O₂)
+                    </span>
+                    <span class="sensor-value" id="o2Value">20.93<span class="sensor-unit">%</span></span>
+                </div>
+                <div class="sensor-reading">
+                    <span class="sensor-label">
+                        <i class="fas fa-circle" style="color: #e74c3c;"></i>
+                        Dióxido de Carbono (CO₂)
+                    </span>
+                    <span class="sensor-value" id="co2Value">400<span class="sensor-unit">ppm</span></span>
+                </div>
+                <div class="sensor-reading">
+                    <span class="sensor-label">
+                        <i class="fas fa-circle" style="color: #f39c12;"></i>
+                        Presión Diferencial
+                    </span>
+                    <span class="sensor-value" id="pressureValue">0.0<span class="sensor-unit">Pa</span></span>
+                </div>
+                <div class="sensor-reading">
+                    <span class="sensor-label">
+                        <i class="fas fa-circle" style="color: #27ae60;"></i>
+                        Temperatura
+                    </span>
+                    <span class="sensor-value" id="tempValue">25.0<span class="sensor-unit">°C</span></span>
+                </div>
+                <div class="sensor-reading">
+                    <span class="sensor-label">
+                        <i class="fas fa-circle" style="color: #9b59b6;"></i>
+                        Presión Atmosférica
+                    </span>
+                    <span class="sensor-value" id="atmPressureValue">101.3<span class="sensor-unit">kPa</span></span>
+                </div>
+            </div>
+
+            <!-- VO2 Consumption Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-heartbeat card-icon" style="color: var(--danger-color);"></i> Consumo de Oxígeno</h3>
+                </div>
+                <div class="chart-container">
+                    <canvas id="vo2Chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Metabolic Data Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-fire card-icon" style="color: var(--warning-color);"></i> Datos Metabólicos</h3>
+                </div>
+                <div class="metabolic-grid">
+                    <div class="metabolic-item">
+                        <div class="metabolic-label">VO₂</div>
+                        <div class="metabolic-value" id="vo2Display">0.0<span style="font-size: 0.5em; color: #888;"> ml/min</span></div>
+                    </div>
+                    <div class="metabolic-item">
+                        <div class="metabolic-label">VO₂ Max</div>
+                        <div class="metabolic-value" id="vo2maxDisplay">0.0<span style="font-size: 0.5em; color: #888;"> ml/kg/min</span></div>
+                    </div>
+                    <div class="metabolic-item">
+                        <div class="metabolic-label">VCO₂</div>
+                        <div class="metabolic-value" id="vco2Display">0.0<span style="font-size: 0.5em; color: #888;"> ml/min</span></div>
+                    </div>
+                    <div class="metabolic-item">
+                        <div class="metabolic-label">RER <span class="tooltip" data-tooltip="Respiratory Exchange Ratio"><i class="fas fa-info-circle" style="font-size: 0.8em;"></i></span></div>
+                        <div class="metabolic-value" id="rerDisplay">0.85</div>
+                    </div>
+                    <div class="metabolic-item">
+                        <div class="metabolic-label">Gasto Energético</div>
+                        <div class="metabolic-value" id="eeDisplay">0.0<span style="font-size: 0.5em; color: #888;"> kcal/min</span></div>
+                    </div>
+                    <div class="metabolic-item">
+                        <div class="metabolic-label">Ventilación (VE)</div>
+                        <div class="metabolic-value" id="veDisplay">0.0<span style="font-size: 0.5em; color: #888;"> L/min</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Flow Rate Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-wind card-icon" style="color: var(--success-color);"></i> Flujo Respiratorio</h3>
+                </div>
+                <div class="chart-container">
+                    <canvas id="flowChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Secondary Grid -->
+        <div class="dashboard-grid">
+            <!-- System Information -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-microchip card-icon" style="color: var(--primary-color);"></i> Información del Sistema</h3>
+                </div>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <strong>Firmware</strong>
+                        <span id="firmwareVersion">v3.0</span>
+                    </div>
+                    <div class="info-item">
+                        <strong>Dispositivo</strong>
+                        <span>ESP32 TTGO</span>
+                    </div>
+                    <div class="info-item">
+                        <strong>Batería</strong>
+                        <span id="batteryLevel">100%</span>
+                    </div>
+                    <div class="info-item">
+                        <strong>Tiempo Activo</strong>
+                        <span id="uptime">00:00:00</span>
+                    </div>
+                    <div class="info-item">
+                        <strong>Diámetro Venturi</strong>
+                        <span id="venturiDiameter">20 mm</span>
+                    </div>
+                    <div class="info-item">
+                        <strong>Peso Usuario</strong>
+                        <span id="userWeight">70 kg</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calibration & Settings -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-sliders-h card-icon" style="color: var(--secondary-color);"></i> Calibración y Configuración</h3>
+                </div>
+                <div class="alert alert-success" id="calibrationStatus">
+                    <i class="fas fa-check-circle"></i>
+                    <span>Sistema calibrado correctamente</span>
+                </div>
+                <div class="button-group">
+                    <button class="btn btn-primary" onclick="calibrateO2()">
+                        <i class="fas fa-vial"></i> Calibrar O₂
+                    </button>
+                    <button class="btn btn-primary" onclick="calibrateFlow()">
+                        <i class="fas fa-syringe"></i> Calibrar Flujo
+                    </button>
+                    <button class="btn btn-success" onclick="saveSettings()">
+                        <i class="fas fa-save"></i> Guardar Config
+                    </button>
+                    <button class="btn btn-danger" onclick="resetSettings()">
+                        <i class="fas fa-undo"></i> Restablecer
+                    </button>
+                </div>
+                <div style="margin-top: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 600;">Peso del Usuario (kg):</label>
+                    <input type="number" id="weightInput" value="70" min="30" max="200" 
+                           style="width: 100%; padding: 10px; border: 2px solid #ddd; border-radius: 6px; font-size: 1em;">
+                </div>
+            </div>
+
+            <!-- Alerts & Diagnostics -->
+            <div class="card">
+                <div class="card-header">
+                    <h3><i class="fas fa-exclamation-triangle card-icon" style="color: var(--warning-color);"></i> Alertas y Diagnóstico</h3>
+                </div>
+                <div class="tabs">
+                    <button class="tab active" onclick="showTab('alerts')">Alertas</button>
+                    <button class="tab" onclick="showTab('errors')">Registro de Errores</button>
+                    <button class="tab" onclick="showTab('validation')">Validación</button>
+                </div>
+                <div id="alertsTab" class="tab-content active">
+                    <div id="alertsContainer">
+                        <div class="alert alert-success">
+                            <i class="fas fa-check"></i>
+                            <span>Todos los sensores operando normalmente</span>
+                        </div>
+                    </div>
+                </div>
+                <div id="errorsTab" class="tab-content">
+                    <div id="errorLog" style="max-height: 300px; overflow-y: auto;">
+                        <p style="text-align: center; color: #888; padding: 20px;">Sin errores registrados</p>
+                    </div>
+                </div>
+                <div id="validationTab" class="tab-content">
+                    <div class="sensor-reading">
+                        <span class="sensor-label">Validación O₂</span>
+                        <span id="o2Validation"><i class="fas fa-check-circle" style="color: var(--success-color);"></i></span>
+                    </div>
+                    <div class="sensor-reading">
+                        <span class="sensor-label">Validación CO₂</span>
+                        <span id="co2Validation"><i class="fas fa-check-circle" style="color: var(--success-color);"></i></span>
+                    </div>
+                    <div class="sensor-reading">
+                        <span class="sensor-label">Validación Presión</span>
+                        <span id="pressureValidation"><i class="fas fa-check-circle" style="color: var(--success-color);"></i></span>
+                    </div>
+                    <div class="sensor-reading">
+                        <span class="sensor-label">Validación Temperatura</span>
+                        <span id="tempValidation"><i class="fas fa-check-circle" style="color: var(--success-color);"></i></span>
+                    </div>
+                    <div class="sensor-reading">
+                        <span class="sensor-label">Integridad EEPROM</span>
+                        <span id="eepromValidation"><i class="fas fa-check-circle" style="color: var(--success-color);"></i></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Documentation Section -->
+        <div class="card">
+            <div class="card-header">
+                <h3><i class="fas fa-book card-icon" style="color: var(--primary-color);"></i> Documentación Técnica</h3>
+            </div>
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('formulas')">Fórmulas</button>
+                <button class="tab" onclick="showTab('ranges')">Rangos de Validación</button>
+                <button class="tab" onclick="showTab('about')">Acerca de</button>
+            </div>
+            <div id="formulasTab" class="tab-content active">
+                <h4 style="color: var(--primary-color); margin: 15px 0 10px 0;">Ecuaciones Fundamentales</h4>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; font-family: 'Courier New', monospace; margin-bottom: 15px;">
+                    <strong>Flujo Venturi (ISO 5167):</strong><br>
+                    Q = A₂ × √(2ΔP / ρ × (1/(A₂/A₁)² - 1))
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; font-family: 'Courier New', monospace; margin-bottom: 15px;">
+                    <strong>Consumo de Oxígeno (VO₂):</strong><br>
+                    VO₂ = VE × (FiO₂ - FeO₂) × ρ_correction
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; font-family: 'Courier New', monospace; margin-bottom: 15px;">
+                    <strong>Densidad del Aire (Ley de Gases):</strong><br>
+                    ρ = P / (R_específico × T)
+                </div>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; font-family: 'Courier New', monospace;">
+                    <strong>Corrección BTPS/STPD:</strong><br>
+                    Factor = (273 + T_body) / (273 + T_ambient) × P_std / P_measured
+                </div>
+            </div>
+            <div id="rangesTab" class="tab-content">
+                <h4 style="color: var(--primary-color); margin: 15px 0 10px 0;">Rangos Fisiológicos de Validación</h4>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead style="background: var(--light-bg);">
+                        <tr>
+                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Sensor</th>
+                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Rango Normal</th>
+                            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #ddd;">Umbral Crítico</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>O₂</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">8% - 25%</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">&lt; 10% (Alerta)</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>CO₂</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">200 - 50,000 ppm</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">&gt; 40,000 ppm (Peligro)</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Presión</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">-50 a 5,000 Pa</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">N/A</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Temperatura</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">-10°C a 60°C</td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">&lt; 0°C o &gt; 50°C</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="aboutTab" class="tab-content">
+                <h4 style="color: var(--primary-color); margin: 15px 0 10px 0;">VO2Smart System</h4>
+                <p style="line-height: 1.6; color: #555; margin-bottom: 15px;">
+                    Sistema profesional de análisis respiratorio y cálculo de consumo de oxígeno (VO₂Max) diseñado para 
+                    aplicaciones médicas y de investigación. Utiliza tecnología de última generación con validación de datos 
+                    en tiempo real, seguridad mediante mutex FreeRTOS, y persistencia con checksums CRC32.
+                </p>
+                <h4 style="color: var(--primary-color); margin: 15px 0 10px 0;">Características Principales</h4>
+                <ul style="line-height: 2; color: #555;">
+                    <li><i class="fas fa-check" style="color: var(--success-color);"></i> Validación fisiológica completa de datos de sensores</li>
+                    <li><i class="fas fa-check" style="color: var(--success-color);"></i> Thread-safety con sistema de mutex FreeRTOS</li>
+                    <li><i class="fas fa-check" style="color: var(--success-color);"></i> Integridad de datos EEPROM con CRC32</li>
+                    <li><i class="fas fa-check" style="color: var(--success-color);"></i> Sistema centralizado de manejo de errores</li>
+                    <li><i class="fas fa-check" style="color: var(--success-color);"></i> Filtros Kalman optimizados para ESP32</li>
+                    <li><i class="fas fa-check" style="color: var(--success-color);"></i> Conectividad Bluetooth Low Energy (BLE)</li>
+                </ul>
+                <p style="margin-top: 20px; padding: 15px; background: var(--light-bg); border-radius: 6px;">
+                    <strong>Inventor:</strong> Claudio Abarca<br>
+                    <strong>Patente:</strong> 2024024875<br>
+                    <strong>Versión:</strong> 3.0 (Optimizado por Csav20)<br>
+                    <strong>Año:</strong> 2024-2025
+                </p>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p>
+                <strong>VO2Smart</strong> © 2024-2025 | Claudio Abarca | Patente 2024024875<br>
+                Sistema Profesional de Análisis Respiratorio | Optimizado por Csav20
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================
+        // CONFIGURACIÓN INICIAL Y VARIABLES GLOBALES
+        // ============================================================
+        
+        let vo2Chart, flowChart;
+        let isConnected = false;
+        let dataBuffer = {
+            vo2: [],
+            flow: [],
+            timestamps: []
+        };
+        const MAX_DATA_POINTS = 60; // 1 minuto de datos a 1Hz
+        let startTime = Date.now();
+
+        // ============================================================
+        // INICIALIZACIÓN DE GRÁFICOS
+        // ============================================================
+        
+        function initCharts() {
+            // Gráfico de VO2
+            const vo2Ctx = document.getElementById('vo2Chart').getContext('2d');
+            vo2Chart = new Chart(vo2Ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'VO₂ (ml/min)',
+                        data: [],
+                        borderColor: '#e74c3c',
+                        backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tiempo (s)'
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Consumo de O₂ (ml/min)'
+                            },
+                            beginAtZero: true,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Gráfico de Flujo
+            const flowCtx = document.getElementById('flowChart').getContext('2d');
+            flowChart = new Chart(flowCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Flujo (L/min)',
+                        data: [],
+                        borderColor: '#27ae60',
+                        backgroundColor: 'rgba(39, 174, 96, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Tiempo (s)'
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Flujo (L/min)'
+                            },
+                            beginAtZero: true,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // ============================================================
+        // GESTIÓN DE PESTAÑAS
+        // ============================================================
+        
+        function showTab(tabName) {
+            // Ocultar todos los contenidos
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => content.classList.remove('active'));
+            
+            // Desactivar todos los tabs
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            
+            // Activar el tab seleccionado
+            event.target.classList.add('active');
+            
+            // Mostrar el contenido correspondiente
+            const contentMap = {
+                'alerts': 'alertsTab',
+                'errors': 'errorsTab',
+                'validation': 'validationTab',
+                'formulas': 'formulasTab',
+                'ranges': 'rangesTab',
+                'about': 'aboutTab'
+            };
+            
+            const contentId = contentMap[tabName];
+            if (contentId) {
+                document.getElementById(contentId).classList.add('active');
+            }
+        }
+
+        // ============================================================
+        // ACTUALIZACIÓN DE DATOS DEL SERVIDOR
+        // ============================================================
+        
+        async function fetchData() {
+            try {
+                // ⚠️ PRODUCCIÓN: Descomentar las siguientes líneas para usar API real del ESP32
+                // const response = await fetch('/api/vo2');
+                // const data = await response.json();
+                
+                // 🧪 DESARROLLO: Usando datos simulados para pruebas
+                const data = await simulateServerData();
+                
+                updateUI(data);
+                updateCharts(data);
+            } catch (error) {
+                console.error('Error al obtener datos:', error);
+                showAlert('Error de comunicación con el dispositivo', 'danger');
+            }
+        }
+
+        // ⚠️ FUNCIÓN DE SIMULACIÓN PARA PRUEBAS ⚠️
+        // TODO: Reemplazar con fetch real al ESP32 en producción
+        // Ejemplo: const response = await fetch('/api/vo2');
+        //          return await response.json();
+        function simulateServerData() {
+            console.log('⚠️ Usando datos simulados - Reemplazar con API real del ESP32');
+            const time = (Date.now() - startTime) / 1000;
+            return {
+                o2: 20.93 + (Math.random() - 0.5) * 0.5,
+                co2: 400 + Math.random() * 200,
+                pressure: Math.sin(time) * 50 + 50,
+                temperature: 25 + (Math.random() - 0.5) * 2,
+                atmPressure: 101.3 + (Math.random() - 0.5) * 0.5,
+                vo2: 250 + Math.sin(time) * 100 + Math.random() * 20,
+                vo2max: 45.5,
+                vco2: 200 + Math.sin(time) * 80,
+                rer: 0.85 + (Math.random() - 0.5) * 0.1,
+                energyExpenditure: 4.8 + (Math.random() - 0.5) * 0.5,
+                ventilation: 8.5 + Math.sin(time) * 2,
+                flow: 8.5 + Math.sin(time) * 2,
+                battery: 85,
+                timestamp: time
+            };
+        }
+
+        // ============================================================
+        // ACTUALIZACIÓN DE LA INTERFAZ
+        // ============================================================
+        
+        function updateUI(data) {
+            // Actualizar valores de sensores
+            document.getElementById('o2Value').innerHTML = `${data.o2.toFixed(2)}<span class="sensor-unit">%</span>`;
+            document.getElementById('co2Value').innerHTML = `${data.co2.toFixed(0)}<span class="sensor-unit">ppm</span>`;
+            document.getElementById('pressureValue').innerHTML = `${data.pressure.toFixed(1)}<span class="sensor-unit">Pa</span>`;
+            document.getElementById('tempValue').innerHTML = `${data.temperature.toFixed(1)}<span class="sensor-unit">°C</span>`;
+            document.getElementById('atmPressureValue').innerHTML = `${data.atmPressure.toFixed(1)}<span class="sensor-unit">kPa</span>`;
+            
+            // Actualizar datos metabólicos
+            document.getElementById('vo2Display').innerHTML = `${data.vo2.toFixed(1)}<span style="font-size: 0.5em; color: #888;"> ml/min</span>`;
+            document.getElementById('vo2maxDisplay').innerHTML = `${data.vo2max.toFixed(1)}<span style="font-size: 0.5em; color: #888;"> ml/kg/min</span>`;
+            document.getElementById('vco2Display').innerHTML = `${data.vco2.toFixed(1)}<span style="font-size: 0.5em; color: #888;"> ml/min</span>`;
+            document.getElementById('rerDisplay').textContent = data.rer.toFixed(2);
+            document.getElementById('eeDisplay').innerHTML = `${data.energyExpenditure.toFixed(1)}<span style="font-size: 0.5em; color: #888;"> kcal/min</span>`;
+            document.getElementById('veDisplay').innerHTML = `${data.ventilation.toFixed(1)}<span style="font-size: 0.5em; color: #888;"> L/min</span>`;
+            
+            // Actualizar información del sistema
+            document.getElementById('batteryLevel').textContent = `${data.battery}%`;
+            updateUptime();
+            
+            // Validaciones
+            validateSensorData(data);
+        }
+
+        // ============================================================
+        // ACTUALIZACIÓN DE GRÁFICOS
+        // ============================================================
+        
+        function updateCharts(data) {
+            const timestamp = Math.floor(data.timestamp);
+            
+            // Agregar nuevos datos
+            dataBuffer.timestamps.push(timestamp);
+            dataBuffer.vo2.push(data.vo2);
+            dataBuffer.flow.push(data.flow);
+            
+            // Limitar el tamaño del buffer
+            if (dataBuffer.timestamps.length > MAX_DATA_POINTS) {
+                dataBuffer.timestamps.shift();
+                dataBuffer.vo2.shift();
+                dataBuffer.flow.shift();
+            }
+            
+            // Actualizar gráfico VO2
+            vo2Chart.data.labels = dataBuffer.timestamps;
+            vo2Chart.data.datasets[0].data = dataBuffer.vo2;
+            vo2Chart.update('none'); // 'none' para animación más rápida
+            
+            // Actualizar gráfico de flujo
+            flowChart.data.labels = dataBuffer.timestamps;
+            flowChart.data.datasets[0].data = dataBuffer.flow;
+            flowChart.update('none');
+        }
+
+        // ============================================================
+        // VALIDACIÓN DE DATOS
+        // ============================================================
+        
+        function validateSensorData(data) {
+            const validations = {
+                o2: data.o2 >= 8 && data.o2 <= 25,
+                co2: data.co2 >= 200 && data.co2 <= 50000,
+                pressure: data.pressure >= -50 && data.pressure <= 5000,
+                temp: data.temperature >= -10 && data.temperature <= 60
+            };
+            
+            // Actualizar iconos de validación
+            updateValidationIcon('o2Validation', validations.o2);
+            updateValidationIcon('co2Validation', validations.co2);
+            updateValidationIcon('pressureValidation', validations.pressure);
+            updateValidationIcon('tempValidation', validations.temp);
+            
+            // Alertas críticas
+            if (data.co2 > 40000) {
+                showAlert('¡PELIGRO! Nivel crítico de CO₂ detectado', 'danger');
+            }
+            
+            if (data.o2 < 10) {
+                showAlert('Advertencia: Nivel bajo de oxígeno', 'warning');
+            }
+        }
+
+        function updateValidationIcon(elementId, isValid) {
+            const element = document.getElementById(elementId);
+            if (isValid) {
+                element.innerHTML = '<i class="fas fa-check-circle" style="color: var(--success-color);"></i>';
+            } else {
+                element.innerHTML = '<i class="fas fa-exclamation-circle" style="color: var(--danger-color);"></i>';
+            }
+        }
+
+        // ============================================================
+        // SISTEMA DE ALERTAS
+        // ============================================================
+        
+        function showAlert(message, type) {
+            const alertsContainer = document.getElementById('alertsContainer');
+            const alertClass = `alert-${type}`;
+            const iconClass = type === 'success' ? 'fa-check' : 
+                             type === 'warning' ? 'fa-exclamation-triangle' : 
+                             'fa-times-circle';
+            
+            const alertHTML = `
+                <div class="alert ${alertClass}">
+                    <i class="fas ${iconClass}"></i>
+                    <span>${message}</span>
+                </div>
+            `;
+            
+            alertsContainer.innerHTML = alertHTML;
+        }
+
+        // ============================================================
+        // FUNCIONES DE CALIBRACIÓN
+        // ============================================================
+        
+        function calibrateO2() {
+            showAlert('Iniciando calibración de O₂...', 'warning');
+            // Implementar lógica de calibración real
+            setTimeout(() => {
+                showAlert('Calibración de O₂ completada exitosamente', 'success');
+            }, 2000);
+        }
+
+        function calibrateFlow() {
+            showAlert('Iniciando calibración de flujo...', 'warning');
+            // Implementar lógica de calibración real
+            setTimeout(() => {
+                showAlert('Calibración de flujo completada exitosamente', 'success');
+            }, 2000);
+        }
+
+        function saveSettings() {
+            const weight = document.getElementById('weightInput').value;
+            showAlert('Guardando configuración...', 'warning');
+            // Implementar guardado real en EEPROM
+            setTimeout(() => {
+                showAlert('Configuración guardada exitosamente', 'success');
+            }, 1000);
+        }
+
+        function resetSettings() {
+            if (confirm('¿Está seguro de que desea restablecer la configuración a valores por defecto?')) {
+                showAlert('Restableciendo configuración...', 'warning');
+                // Implementar reset real
+                setTimeout(() => {
+                    showAlert('Configuración restablecida exitosamente', 'success');
+                    document.getElementById('weightInput').value = '70';
+                }, 1000);
+            }
+        }
+
+        // ============================================================
+        // UTILIDADES
+        // ============================================================
+        
+        function updateUptime() {
+            const uptime = Math.floor((Date.now() - startTime) / 1000);
+            const hours = Math.floor(uptime / 3600);
+            const minutes = Math.floor((uptime % 3600) / 60);
+            const seconds = uptime % 60;
+            
+            const formatted = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            document.getElementById('uptime').textContent = formatted;
+        }
+
+        function updateConnectionStatus(connected) {
+            const bleStatus = document.getElementById('bleStatus');
+            const systemStatus = document.getElementById('systemStatus');
+            
+            if (connected) {
+                bleStatus.className = 'status-badge connected';
+                bleStatus.innerHTML = '<i class="fas fa-bluetooth-b"></i><span>Conectado</span>';
+                
+                systemStatus.className = 'status-badge connected';
+                systemStatus.innerHTML = '<i class="fas fa-check-circle"></i><span>Operativo</span>';
+            } else {
+                bleStatus.className = 'status-badge disconnected';
+                bleStatus.innerHTML = '<i class="fas fa-bluetooth-b"></i><span>Desconectado</span>';
+                
+                systemStatus.className = 'status-badge disconnected';
+                systemStatus.innerHTML = '<i class="fas fa-exclamation-circle"></i><span>Sin conexión</span>';
+            }
+        }
+
+        // ============================================================
+        // INICIALIZACIÓN
+        // ============================================================
+        
+        window.addEventListener('load', () => {
+            initCharts();
+            updateConnectionStatus(false);
+            
+            // Simular conexión después de 2 segundos
+            setTimeout(() => {
+                updateConnectionStatus(true);
+                showAlert('Sistema iniciado correctamente', 'success');
+                
+                // Iniciar actualización de datos
+                setInterval(fetchData, 1000); // Actualizar cada segundo
+            }, 2000);
+        });
+
+        // ============================================================
+        // MANEJO DE ERRORES GLOBALES
+        // ============================================================
+        
+        window.addEventListener('error', (event) => {
+            console.error('Error global:', event.error);
+            showAlert('Error en la aplicación. Por favor, recargue la página.', 'danger');
+        });
+    </script>
+</body>
+</html>

@@ -1,4 +1,9 @@
 <!DOCTYPE html>
+<!-- 
+    VO2Smart - Professional Respiratory Analysis System
+    Language: Spanish (es) - For international use, modify lang="es" to lang="en" and translate content
+    Author: Claudio Abarca (Patent 2024024875) | Optimized by Csav20
+-->
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -757,7 +762,7 @@
                     <strong>Inventor:</strong> Claudio Abarca<br>
                     <strong>Patente:</strong> 2024024875<br>
                     <strong>Versión:</strong> 3.0 (Optimizado por Csav20)<br>
-                    <strong>Fecha:</strong> Abril 2025
+                    <strong>Año:</strong> 2024-2025
                 </p>
             </div>
         </div>
@@ -930,18 +935,27 @@
         
         async function fetchData() {
             try {
-                // Simular datos del servidor (reemplazar con fetch real a ESP32)
-                const response = await simulateServerData();
-                updateUI(response);
-                updateCharts(response);
+                // ⚠️ PRODUCCIÓN: Descomentar las siguientes líneas para usar API real del ESP32
+                // const response = await fetch('/api/vo2');
+                // const data = await response.json();
+                
+                // 🧪 DESARROLLO: Usando datos simulados para pruebas
+                const data = await simulateServerData();
+                
+                updateUI(data);
+                updateCharts(data);
             } catch (error) {
                 console.error('Error al obtener datos:', error);
                 showAlert('Error de comunicación con el dispositivo', 'danger');
             }
         }
 
-        // Función simulada - reemplazar con fetch real al ESP32
+        // ⚠️ FUNCIÓN DE SIMULACIÓN PARA PRUEBAS ⚠️
+        // TODO: Reemplazar con fetch real al ESP32 en producción
+        // Ejemplo: const response = await fetch('/api/vo2');
+        //          return await response.json();
         function simulateServerData() {
+            console.log('⚠️ Usando datos simulados - Reemplazar con API real del ESP32');
             const time = (Date.now() - startTime) / 1000;
             return {
                 o2: 20.93 + (Math.random() - 0.5) * 0.5,
